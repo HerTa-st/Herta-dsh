@@ -34,13 +34,18 @@
 
 ## ⚙️ 兼容性（先看这一节）
 
-**面向 DSH `0.1.7-rc.2`。** 本版本修的正是 0.1.5 → 0.1.7 之间两处**破坏性 API 变更**
+**面向 DSH `0.1.7-rc.2`。** 本版本修的正是 0.1.5 → 0.1.7 之间三处**破坏性 API 变更**
 （都是实测出来的，不是猜的）：
 
 | 变了什么 | 0.1.5 时的写法 | 0.1.7 的现状 | 本仓库怎么办 |
 |---|---|---|---|
 | **agent preset 的载体** | `$DSH_HOME/.agent-presets/<name>/agent.cordis.yml`（一整棵 cordis 树）+ `preset.yml` | 该目录机制**整个移除**（运行时里已无任何代码引用 `.agent-presets`）；preset 变成一条 `@deepseek-ai/dsh-agent-preset` loader 行，官方写成 `dsh-web-app/presets/*.patch.yml` | 生成 `preset/herta.patch.yml`，作为**第二条 bundle patch** 随插件一起装（`dsh.bundle.patch` 现在可以是数组） |
 | **用户偏好的存放（设置域）** | 宿主 `ctx.settings.register(ns, schema)` + 客户端 `settingsScope.bind({namespace})` | 两者**一起消失**：`SettingsProvider`/`SettingsScope`/`SettingsRegisterOptions` 不再导出，客户端 `settingsScope` 服务不存在，事件 `settings/updated`、`settings/document-updated` 也没了；换成基于插件 Config 的 `SettingsForms`/`configForms`，**没有第三方命名空间入口** | 语音偏好改为**自持**：`$DSH_HOME/dsh-herta-voice.json` + 白名单端点 `GET/PUT /herta-settings`（理由与代价见 `src/host/voice-settings.js` 文件头） |
+| **消息来源的 kind（会话格式 v4）** | `{ kind: "plugin", plugin: "dsh-herta" }` | v4 只认「生产者自有 kind」，`kind: "plugin"` 在**写入会话时**就被 `assertV4SourceRowAdmission` 拒绝（`format v4 message requires a producer-owned source kind`）；第三方插件的合法形状是 `{ kind: "plugin:<包名>" }` —— 这正是 DSH 自己的 v3→v4 迁移为旧行推导出的形状，两代读回同一个 kind | 全部改成 `{ kind: "plugin:dsh-herta" }`（`agent.steer` 两处 + 两个 `PLUGIN_SOURCE`）；新增 `scripts/test-source-kind.mjs` 钉住这条不变量 |
+
+> ⚠️ 第三处症状最难定位：被拒的事件**根本没进会话日志**（写入前就抛了），
+> 事后翻 `session.v4.jsonl.zstd` 是干净的，只有 GUI 上显示「本轮运行失败」。
+> 实测就是这么踩的 —— 详见 v0.1.3 版本历史。
 
 其余用到的 API 在 0.1.7 上**没变**，实测可用：`ctx.systemPrompt.section({name,order,text})`、
 `ctx.tools.register(defineTool(...))`、`ctx.inject([...])`、`ctx.slots.inject/register`、
@@ -52,7 +57,7 @@
 > 升级 DSH 后先跑这三条：
 > 1. `dsh --profile <p> --dump-config` → 应有 `- id: preset-herta`，且其 `config.plugins` 末尾有 `plane: preset`
 > 2. 启动日志 → 应有 `plane=host`、`plane=preset`、`叙述层依赖就绪`、`设置端点已挂`，**不应**出现 `settings.register is not a function`
-> 3. `npm test` → 531 项；`npm run test:integration` → 28 项
+> 3. `npm test` → 608 项；`npm run test:integration` → 28 项
 
 ---
 
@@ -364,7 +369,7 @@ node scripts\test-tts-runtime.mjs
 22 项：运行时能被加载（拿到 sherpa-onnx 版本号）→ 真合成出 **24 kHz 非静音**音频
 → WAV 头/采样数/字节数自洽 → 波形有起伏（不是一条平线）。
 
-`npm test` 跑十一组纯逻辑测试（共 **531 项**）；另有 LLM 路径的集成测试
+`npm test` 跑十三组纯逻辑测试（共 **608 项**）；另有 LLM 路径的集成测试
 （28 项，用 mock 的 `ctx.llm` 把管道整条跑通）：
 
 ```powershell
@@ -546,6 +551,14 @@ MIT 范围内**，权利归米哈游及各自所有者。本仓库已按《崩�
 语音偏好自持）此前只存在于仓库里、没有单独发版；这一版连同下面几项一起发布，
 tag 为 `v0.1.3`：
 
+- **会话 v4 的消息来源 kind**（第三处破坏性变更，2026-09-26 实测补上）：注入消息
+  原先写 0.1.5 时代的 `{ kind: "plugin", plugin: "dsh-herta" }`，v4 在**写入会话时**
+  就拒（`format v4 message requires a producer-owned source kind`），症状是每一轮
+  都报「本轮运行失败」，而被拒的事件根本没进日志 —— 翻会话文件是干净的，极难定位。
+  三处 `agent.steer` / `PLUGIN_SOURCE` 全部改成 `{ kind: "plugin:dsh-herta" }`
+  （与 DSH 自己的 v3→v4 迁移为旧行推导出的形状一致），并新增
+  `scripts/test-source-kind.mjs` 把这条不变量钉住（已确认注入旧写法会变红）。
+  同一形状的坑 `dsh-mimo-coder` 也有，一并改了它的 `PLUGIN_SOURCE`。
 - **本地 TTS 运行时随包分发**（`assets/tts-runtime/`，22 MB）：sherpa-onnx 1.13.6 +
   onnxruntime 1.27.1 + espeak-ng / piper-phonemize 的 fork，许可原文在 `LICENSES/`。
   宿主**真探测**它（子进程把 addon 加载起来拿版本号）之后才报 `runtime: true` ——
@@ -565,13 +578,13 @@ tag 为 `v0.1.3`：
 - **构建与测试脚本去掉全部写死的本机绝对路径**：preset 底本改从
   `dsh-web-app/presets/standard.patch.yml` 取，探测不到会明确报错并告诉你设哪个变量。
 
-兼容性细节（两处破坏性 API 变更、修之前各自的症状）见下面 v0.1.2 一节 ——
-那一节的正文就是这一版真正发出去的内容。
+兼容性细节（三处破坏性 API 变更、修之前各自的症状）见上面「兼容性」一节与
+下面 v0.1.2 一节 —— v0.1.2 的正文是前两处真正发出去的内容。
 
-**验证**：`npm test` 12 组纯逻辑用例 **601 项全过**（test-narrative 31 /
+**验证**：`npm test` 13 组纯逻辑用例 **608 项全过**（test-narrative 31 /
 dream 28 / mapping 41 / narrative-hints 54 / supervisor 81 / session-surface 32 /
 beat-policy 61 / dream-distill 55 / mimo-tts 40 / voice-settings 50 /
-voice-model 50 / herta-settings 78），另有 28 项 LLM 路径集成测试
+voice-model 50 / herta-settings 78 / source-kind 7），另有 28 项 LLM 路径集成测试
 （`npm run test:integration`）。
 
 **仍未接**：回复 → 合成 → 整机 iframe 播放那一跳 —— 「实时语音」开关会亮，

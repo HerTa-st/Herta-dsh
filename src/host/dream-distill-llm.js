@@ -33,8 +33,13 @@ import {
   parseWorthiness,
 } from "./dream-distill.js";
 
-/** 插件身份，写进消息的 source。 */
-const PLUGIN_SOURCE = { kind: "plugin", plugin: "dsh-herta" };
+/**
+ * 插件身份，写进消息的 source。
+ *
+ * ⚠️ 会话格式 v4 只认「生产者自有 kind」，写 `{ kind: "plugin", plugin: "..." }`
+ * 会直接被拒（`format v4 message requires a producer-owned source kind`）。
+ */
+const PLUGIN_SOURCE = { kind: "plugin:dsh-herta" };
 
 /** 单次蒸馏调用的默认超时。比复核宽松 —— 生成正文比出一句判决费时。 */
 export const DEFAULT_DISTILL_TIMEOUT_MS = 60_000;

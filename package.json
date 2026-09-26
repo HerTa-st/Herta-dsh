@@ -43,7 +43,7 @@
     "build:ui": "node scripts/build-herta-ui.mjs",
     "deploy": "node scripts/deploy.mjs",
     "install:web": "node scripts/install-web.mjs",
-    "test": "node scripts/test-narrative.mjs && node scripts/test-dream.mjs && node scripts/test-mapping.mjs && node scripts/test-narrative-hints.mjs && node scripts/test-supervisor.mjs && node scripts/test-session-surface.mjs && node scripts/test-beat-policy.mjs && node scripts/test-dream-distill.mjs && node scripts/test-mimo-tts.mjs && node scripts/test-voice-settings.mjs && node scripts/test-voice-model.mjs && node scripts/test-herta-settings.mjs",
+    "test": "node scripts/test-narrative.mjs && node scripts/test-dream.mjs && node scripts/test-mapping.mjs && node scripts/test-narrative-hints.mjs && node scripts/test-supervisor.mjs && node scripts/test-session-surface.mjs && node scripts/test-beat-policy.mjs && node scripts/test-dream-distill.mjs && node scripts/test-mimo-tts.mjs && node scripts/test-voice-settings.mjs && node scripts/test-voice-model.mjs && node scripts/test-herta-settings.mjs && node scripts/test-source-kind.mjs",
     "test:integration": "node --import ./scripts/test-resolve-hook.mjs scripts/test-llm-integration.mjs"
   }
 }

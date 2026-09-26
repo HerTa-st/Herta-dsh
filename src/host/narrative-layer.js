@@ -162,10 +162,13 @@ export async function reviewTurn({ ctx, agent, turn, signal, budget, marks }) {
       marks.supervisorLast.steerError = "createUserMessage 不可用";
       return false;
     }
+    // source 必须是「生产者自有 kind」：会话格式 v4 会拒绝
+    // `{ kind: "plugin", plugin: "..." }`（整轮 turn 报
+    // `format v4 message requires a producer-owned source kind`）。
     agent.steer(
       createUserMessage({
         content: [{ type: "text", text }],
-        source: { kind: "plugin", plugin: "dsh-herta" },
+        source: { kind: "plugin:dsh-herta" },
       }),
     );
     marks.supervisorVetoes = (marks.supervisorVetoes ?? 0) + 1;
@@ -352,10 +355,13 @@ export async function installNarrativeLayer(ctx) {
             return;
           }
           // 同步注入 —— emit 模式下不 await（钩子不等待观察者）。
+          // source 必须是「生产者自有 kind」：会话格式 v4 会拒绝
+          // `{ kind: "plugin", plugin: "..." }`（整轮 turn 报
+          // `format v4 message requires a producer-owned source kind`）。
           exec.agent.steer(
             createUserMessage({
               content: [{ type: "text", text }],
-              source: { kind: "plugin", plugin: "dsh-herta" },
+              source: { kind: "plugin:dsh-herta" },
             }),
           );
           beatBudget.record(turn);
