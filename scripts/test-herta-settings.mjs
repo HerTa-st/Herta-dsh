@@ -1,45 +1,42 @@
 /**
- * 「黑塔·整机」设置搬迁的单测 —— 三层纯逻辑，都在 Node 里直接跑，不需要 DSH 运行时。
+ * 「黑塔」设置的单测 —— 纯逻辑，在 Node 里直接跑，不需要 DSH 运行时。
  *
- *   1. `settings-schema.js` —— 字段表、校验、归一化、写回意图的**形状**
- *   2. `settings-sync.js`   —— 读-改-写只碰自己的键、原子落盘、旧文件迁移
- *   3. 交叉核对：`Config` 的 schema 与字段表同源（这条最关键，见最后一节）
+ * 这个文件在 2026-09-26 被**重写**过一次：上一版测的是「把值写回整机自己读的
+ * 两份 settings.json」（`settings-sync.js`：读-改-写、原子落盘、旧文件迁移、
+ * 只写 `user` 层覆盖过的字段）。那一整条链路已经删除，所以那些断言连同它们
+ * 要保护的模块一起消失。现在测的是剩下的事，外加**两条防回归的断言**：
  *
- * ## 为什么这些断言值得写
+ *   1. 字段表自洽：每个字段有 label/kind/默认值，默认值自己是合法值，
+ *      `wired` 注解与 `note` 配套（「暂未接线」的每一项都必须说清为什么）
+ *   2. 校验与归一化：枚举域、布尔口径、数值范围、非法输入一律回落默认
+ *   3. 交叉核对：`src/host/index.js` 的 Config 生成器与字段表同源
+ *   4. **没有第二个真相来源**：`settings-sync.js` 不存在，字段表也不再导出
+ *      写回意图 / 种子 / `sanitizeFollowedFields` 那一套
+ *   5. **语音偏好真的接了 bridge**：`bridge.ts` 有三个新成员、
+ *      `voice-prefs.ts` 有 `hydrateVoicePrefs`、`main.tsx` 调了它
+ *   6. **每个活字段都会被渲染**：分组表（`src/host/settings-groups.js`）必须覆盖
+ *      全部 `WIRED_FIELD_NAMES` —— `voiceEngine` / `realtimeVoice` 曾因为
+ *      「已接线」与「在哪个组里」是两份名单而静默不渲染
  *
- * 整机读全局那份文件时**任一字段非法就整份回落 `{}`**
- * （`app-global-settings.ts:130-175`：逐字段 `return {}` + 兜底 catch）。
- * 也就是说写错一个值的代价不是「那个设置没生效」，而是**她所有偏好一起回默认**。
- * 所以「宁可少写不可写错」这条不变量必须在测试里钉住：
- *   · 每个字段的取值域边界（空串、`follow`、非布尔）
- *   · `locale` / `interactionLanguage` 的「缺席有语义」必须走 `remove` 而不是写空串
- *   · 写回**只碰自己管的键**（`windowState` / `minimaxVoice` 原样留着）
- *   · 没被 DSH 覆盖的字段**一个字节都不写**
+ * 第 4、5、6 条读源码文本，不看运行时 —— 它们要防的是「下一次有人顺手加回来」，
+ * 而不是某个函数的行为。这类断言只能这么写。
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULTS,
   FIELD_NAMES,
   FIELDS,
-  GLOBAL_FIELD_NAMES,
-  WORKSPACE_FIELD_NAMES,
-  globalFileEdits,
+  UNWIRED_FIELD_NAMES,
+  WIRED_FIELD_NAMES,
   isManagedValue,
   normalizeSettings,
-  sanitizeFollowedFields,
-  valuesFromGlobalFile,
-  valuesFromLegacyVoiceFile,
-  valuesFromWorkspaceFile,
-  workspaceFileEdits,
 } from "../src/host/settings-schema.js";
-import {
-  mergeManaged,
-  readHeretaSeed,
-  syncHertaSettings,
-  workspaceSettingsPath,
-} from "../src/host/settings-sync.js";
+import { SETTINGS_GROUPS, groupOfField } from "../src/host/settings-groups.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, "..");
 
 let pass = 0;
 let fail = 0;
@@ -58,21 +55,78 @@ console.log("herta-settings");
 // ── 1. 字段表自洽 ────────────────────────────────────────────────────────────
 {
   check("字段表非空", FIELD_NAMES.length > 0);
-  check("每个字段都有 label / kind / where", FIELD_NAMES.every((n) => FIELDS[n].label && FIELDS[n].kind && FIELDS[n].where));
+  check(
+    "每个字段都有 label / kind",
+    FIELD_NAMES.every((n) => typeof FIELDS[n].label === "string" && FIELDS[n].label.length > 0 && typeof FIELDS[n].kind === "string"),
+  );
   check("每个字段都有默认值", FIELD_NAMES.every((n) => DEFAULTS[n] === FIELDS[n].def));
   check(
     "每个字段的默认值自己就是合法值",
     FIELD_NAMES.every((n) => isManagedValue(n, DEFAULTS[n])),
   );
   check(
-    "全局字段 + 工作区字段 + workspace 恰好覆盖全部字段",
-    GLOBAL_FIELD_NAMES.length + WORKSPACE_FIELD_NAMES.length + 1 === FIELD_NAMES.length,
+    "枚举字段的默认值在取值域里",
+    FIELD_NAMES.filter((n) => FIELDS[n].kind === "enum").every((n) => FIELDS[n].values.includes(FIELDS[n].def)),
   );
-  check("枚举字段的默认值在取值域里", FIELD_NAMES.filter((n) => FIELDS[n].kind === "enum").every((n) => FIELDS[n].values.includes(FIELDS[n].def)));
-  check("`workspace` 不写进整机的任何文件", FIELDS.workspace.where === "meta");
-  // 这两个字段的默认值是「缺席」语义，必须能被 remove 表达（见第 3 节）。
+  check(
+    "数值字段带 min/max/step 且默认值在范围内",
+    FIELD_NAMES.filter((n) => FIELDS[n].kind === "number").every(
+      (n) => typeof FIELDS[n].min === "number" && typeof FIELDS[n].max === "number" && FIELDS[n].min <= FIELDS[n].def && FIELDS[n].def <= FIELDS[n].max,
+    ),
+  );
+  // 这两个字段的默认值是「缺席」语义，整机会自己解释成「跟随系统 / follow」。
   check("locale 默认为空串（= 跟随系统）", DEFAULTS.locale === "");
   check("interactionLanguage 默认为 follow", DEFAULTS.interactionLanguage === "follow");
+}
+
+// ── 1b. `wired` / `note`：那次消费方核查的记录 ──────────────────────────────
+{
+  check(
+    "wired 与 unwired 恰好覆盖全部字段，且互不重叠",
+    WIRED_FIELD_NAMES.length + UNWIRED_FIELD_NAMES.length === FIELD_NAMES.length &&
+      WIRED_FIELD_NAMES.every((n) => !UNWIRED_FIELD_NAMES.includes(n)),
+  );
+  check(
+    "声明 wired:false 的每一项都必须写清原因（note 非空字符串）",
+    UNWIRED_FIELD_NAMES.every((n) => typeof FIELDS[n].note === "string" && FIELDS[n].note.length > 10),
+  );
+  check(
+    "没声明 wired:false 的项不带 note（别把活的写成死的）",
+    WIRED_FIELD_NAMES.every((n) => FIELDS[n].note === undefined),
+  );
+  // 本轮新加的两个字段必须是活的：整机的播放路径真的读它们。
+  check("voiceMuted / voiceVolume 是活字段", WIRED_FIELD_NAMES.includes("voiceMuted") && WIRED_FIELD_NAMES.includes("voiceVolume"));
+  check("locale / theme / deviceScene 仍是活字段", ["locale", "theme", "deviceScene"].every((n) => WIRED_FIELD_NAMES.includes(n)));
+  check("voiceVolume 默认满音量（100）", DEFAULTS.voiceVolume === 100);
+  check("voiceMuted 默认不静音", DEFAULTS.voiceMuted === false);
+}
+
+// ── 1c. 每个活字段都真的会被渲染（防回归）──────────────────────────────────
+// 2026-09-27 的真事：`voiceEngine` / `realtimeVoice` 被标成 `wired: true`（宿主
+// 真的按它们分发）之后，就被「暂未接线」那一组自动排除了，而分组表没有跟着加 ——
+// 于是这两个字段（连同「语音引擎」这一行）在设置页上**一行都不渲染**：改引擎只能
+// 手改 profile 的 `cordis.patch.yml`。两处名单各说各的，合起来就是"没有行"。
+//
+// 页面只遍历两处：`SETTINGS_GROUPS` 的各组，与 `UNWIRED_FIELD_NAMES`。所以每个
+// 字段必须落在其中之一 —— 这就是这条断言要钉的接缝。
+{
+  const grouped = new Set(SETTINGS_GROUPS.flatMap((entry) => entry.fields));
+  const listed = SETTINGS_GROUPS.flatMap((entry) => entry.fields);
+  check("分组表里的字段名都在字段表里（没有拼错的）", [...grouped].every((n) => FIELD_NAMES.includes(n)));
+  check("同一个字段不在分组表里出现两次", listed.length === grouped.size);
+  check("分组表里的字段都是活字段（死字段该进「暂未接线」）", [...grouped].every((n) => WIRED_FIELD_NAMES.includes(n)));
+  const missing = WIRED_FIELD_NAMES.filter((n) => !grouped.has(n));
+  check(`每个活字段都在某个设置分组里（缺的：${missing.join(",") || "无"}）`, missing.length === 0);
+  check("「暂未接线」那组不与已接线的字段重叠", UNWIRED_FIELD_NAMES.every((n) => !grouped.has(n)));
+  check(
+    "voiceEngine 与 realtimeVoice 都在「语音」组里",
+    groupOfField("voiceEngine") === "语音" && groupOfField("realtimeVoice") === "语音",
+  );
+  check("不在任何分组里的字段返回 undefined", groupOfField("closeToTray") === undefined);
+  // 分组表只有一份：客户端必须 import 它，不许再抄一份在自己文件里。
+  const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
+  check("客户端 import 了 settings-groups.js", clientText.includes('from "../host/settings-groups.js"'));
+  check("客户端没有再抄一份 SETTINGS_GROUPS 常量", !/const\s+SETTINGS_GROUPS\s*=/.test(clientText));
 }
 
 // ── 2. 校验与归一化 ─────────────────────────────────────────────────────────
@@ -88,180 +142,49 @@ console.log("herta-settings");
   check("path 字段认空串与普通路径", isManagedValue("workspace", "") && isManagedValue("workspace", "E:\\ws"));
   check("path 字段拒非字符串", !isManagedValue("workspace", 3) && !isManagedValue("workspace", null));
 
+  check("数值字段认范围内", isManagedValue("voiceVolume", 0) && isManagedValue("voiceVolume", 100) && isManagedValue("voiceVolume", 55));
+  check("数值字段拒越界", !isManagedValue("voiceVolume", -1) && !isManagedValue("voiceVolume", 101));
+  check("数值字段拒字符串与 NaN/Infinity", !isManagedValue("voiceVolume", "50") && !isManagedValue("voiceVolume", NaN) && !isManagedValue("voiceVolume", Infinity));
+  check("数值字段拒布尔", !isManagedValue("voiceVolume", true));
+
   const n = normalizeSettings({ theme: "blue", closeToTray: "yes", voiceEngine: "mimo" });
   check("归一化：非法值回落默认", n.theme === DEFAULTS.theme && n.closeToTray === DEFAULTS.closeToTray);
   check("归一化：合法值保留", n.voiceEngine === "mimo");
+  check("归一化：音量越界回落默认", normalizeSettings({ voiceVolume: 999 }).voiceVolume === DEFAULTS.voiceVolume);
   check("归一化：字段一个不少", Object.keys(n).sort().join(",") === [...FIELD_NAMES].sort().join(","));
-  check("归一化：undefined / null / 字符串都安全", [undefined, null, "x", 42, []].every((v) => Object.keys(normalizeSettings(v)).length === FIELD_NAMES.length));
   check(
-    "归一化：不把无关字段带出来",
-    !("windowState" in normalizeSettings({ windowState: { width: 1 }, theme: "dark" })),
+    "归一化：undefined / null / 字符串都安全",
+    [undefined, null, "x", 42, []].every((v) => Object.keys(normalizeSettings(v)).length === FIELD_NAMES.length),
   );
+  check("归一化：不把无关字段带出来", !("windowState" in normalizeSettings({ windowState: { width: 1 }, theme: "dark" })));
 }
 
-// ── 3. 写回意图的形状（这一节对应「整份回落默认」那个代价） ────────────────────
-{
-  const follow = globalFileEdits({ locale: "", interactionLanguage: "follow" });
-  check("locale='' → remove，不写空串", follow.remove.includes("locale") && !("locale" in follow.set));
-  check("interactionLanguage='follow' → remove", follow.remove.includes("interactionLanguage") && !("interactionLanguage" in follow.set));
-
-  const explicit = globalFileEdits({ locale: "zh", interactionLanguage: "en" });
-  check("locale=zh → set", explicit.set.locale === "zh" && !explicit.remove.includes("locale"));
-  check("interactionLanguage=en → set", explicit.set.interactionLanguage === "en");
-
-  const g = globalFileEdits(DEFAULTS);
-  check("全局意图覆盖全部全局字段", GLOBAL_FIELD_NAMES.every((n) => n in g.set || g.remove.includes(n)));
-  check("全局意图不含工作区字段", WORKSPACE_FIELD_NAMES.every((n) => !(n in g.set)));
-  check("全局意图不写进 workspace", !("workspace" in g.set));
-
-  // 只写「用户真的覆盖过」的字段 —— 这一条是「不拿默认值盖掉她的选择」的实现。
-  const only = globalFileEdits({ theme: "dark" }, new Set(["theme"]));
-  check("only 过滤：只写集合内的字段", Object.keys(only.set).join(",") === "theme" && only.set.theme === "dark");
-  check("only 过滤：集合外的字段连 remove 都不产生", globalFileEdits({ locale: "" }, new Set(["theme"])).remove.length === 0);
-
-  // 工作区意图
-  check("workspace='' → 整份跳过（不是写相对路径）", workspaceFileEdits({ workspace: "" }) === undefined);
-  check("workspace='   ' → 同样跳过", workspaceFileEdits({ workspace: "   " }) === undefined);
-  const w = workspaceFileEdits({ workspace: "E:\\ws", dreamEnabled: false, backendThinking: "max" });
-  check("工作区意图按整机形状分节", w.set.dream.enabled === false && w.set.backend.thinking === "max");
-  check("工作区意图补齐同节其它叶子", w.set.backend.contract === DEFAULTS.backendContract && w.set.models.actor === DEFAULTS.modelsActor);
-  const wOnly = workspaceFileEdits({ workspace: "E:\\ws" }, new Set(["dreamEnabled"]));
-  check("工作区 only 过滤：只落被允许的叶子", JSON.stringify(wOnly.set) === JSON.stringify({ dream: { enabled: DEFAULTS.dreamEnabled } }));
-}
-
-// ── 4. 从整机文件读种子（缺席字段不入结果） ──────────────────────────────────
-{
-  const fromGlobal = valuesFromGlobalFile({
-    windowState: { width: 1440, height: 900 },
-    interactionLanguage: "zh",
-    theme: "light",
-    voiceEngine: "local",
-    minimaxVoice: { voiceId: "x" },
-  });
-  check("种子：只取本插件管的键", Object.keys(fromGlobal).sort().join(",") === "interactionLanguage,theme,voiceEngine");
-  check("种子：windowState / minimaxVoice 不进来", !("windowState" in fromGlobal) && !("minimaxVoice" in fromGlobal));
-  check("种子：缺席的 locale 不入结果（缺席 = 跟随系统）", !("locale" in fromGlobal));
-  check("种子：值非法的字段不入结果", !("theme" in valuesFromGlobalFile({ theme: "blue" })));
-
-  const fromWs = valuesFromWorkspaceFile({
-    backend: { thinking: "high", contract: "standard" },
-    models: { actor: "deepseek-v4-pro", backend: "deepseek-flash" },
-  });
-  check("工作区种子：合法叶子进来", fromWs.backendThinking === "high" && fromWs.backendContract === "standard");
-  check("工作区种子：模型名如实读出", fromWs.modelsActor === "deepseek-v4-pro" && fromWs.modelsBackend === "deepseek-flash");
-  check(
-    "工作区种子：旧模型名折成现名（她读侧也这么折）",
-    valuesFromWorkspaceFile({ models: { actor: "deepseek-v4-flash" } }).modelsActor === "deepseek-flash",
-  );
-  check("工作区种子：乱值当没读到", !("backendThinking" in valuesFromWorkspaceFile({ backend: { thinking: "???" } })));
-  check("工作区种子：缺的 section 不炸", JSON.stringify(valuesFromWorkspaceFile(null)) === "{}" && JSON.stringify(valuesFromWorkspaceFile({ dream: 3 })) === "{}");
-  check("工作区种子：dream.enabled 认布尔", valuesFromWorkspaceFile({ dream: { enabled: false } }).dreamEnabled === false);
-
-  const legacy = valuesFromLegacyVoiceFile({ engine: "mimo", realtimeVoice: false, 别的: 1 });
-  check("旧语音文件：engine → voiceEngine", legacy.voiceEngine === "mimo");
-  check("旧语音文件：realtimeVoice 直通", legacy.realtimeVoice === false);
-  check("旧语音文件：多余键不带出来", Object.keys(legacy).sort().join(",") === "realtimeVoice,voiceEngine");
-}
-
-// ── 4b. 「跟随整机」名单的清洗 ───────────────────────────────────────────────
-//
-// 这份名单由客户端写进 Config，而 profile 的补丁是用户可以手改的文件。
-// 一个拼错的字段名不该改变任何行为 —— 它只该被丢掉。
-{
-  const s = sanitizeFollowedFields(["theme", "不存在的字段", 42, null, "voiceEngine"]);
-  check("名单：只留字段表里真实存在的名字", [...s].join(",") === "theme,voiceEngine");
-  check("名单：空 / 坏值都是空集合", [undefined, null, "x", 42, {}].every((v) => sanitizeFollowedFields(v).size === 0));
-  check("名单：去重由 Set 保证", sanitizeFollowedFields(["theme", "theme"]).size === 1);
-  check("名单：windowState 这类不管的键被丢掉", sanitizeFollowedFields(["windowState"]).size === 0);
-}
-
-// ── 5. 合并语义：只并写自己的键 ──────────────────────────────────────────────
-{
-  const before = {
-    windowState: { width: 1440, height: 900, maximized: false, fullScreen: false },
-    minimaxVoice: { voiceId: "herta-x", host: "https://api.minimaxi.com", clonedAt: "2026-09-12T04:26:02.136Z" },
-    theme: "light",
-  };
-  const after = mergeManaged(before, globalFileEdits({ theme: "dark", deviceScene: true }));
-  check("合并：她自己的键原样保留", JSON.stringify(after.windowState) === JSON.stringify(before.windowState));
-  check("合并：机器状态原样保留", after.minimaxVoice.voiceId === "herta-x");
-  check("合并：我们管的键被更新", after.theme === "dark" && after.deviceScene === true);
-
-  const removed = mergeManaged({ locale: "en", theme: "light" }, { set: { theme: "dark" }, remove: ["locale"] });
-  check("合并：remove 真的删键（而不是写 undefined）", !("locale" in removed) && removed.theme === "dark");
-
-  const nested = mergeManaged({ backend: { thinking: "low", 未来字段: 1 } }, { set: { backend: { contract: "standard" } } });
-  check("合并：嵌套节递归合并", nested.backend.thinking === "low" && nested.backend.contract === "standard");
-  check("合并：嵌套节里未知的键也留着", nested.backend.未来字段 === 1);
-  check("合并：不改入参", before.theme === "light");
-}
-
-// ── 6. 端到端写盘（在临时目录里造出整机的两份文件） ──────────────────────────
-{
-  const dir = mkdtempSync(join(tmpdir(), "dsh-herta-settings-"));
-  const workspace = join(dir, "ws");
-  mkdirSync(join(workspace, ".herta"), { recursive: true });
-  const wsFile = workspaceSettingsPath(workspace);
-
-  // 她自己的那份全局文件：含我们不管的键 + 已经是 light 的主题。
-  // 真实文件路径由 `process.env.APPDATA` 决定，所以这里只驱动**工作区**那一半，
-  // 全局那一半用 `global: false` 跳过（它的路径是固定的，不该被测试写脏）。
-  writeFileSync(
-    wsFile,
-    `${JSON.stringify(
-      { dream: { enabled: true }, backend: { thinking: "high", contract: "standard" }, models: { actor: "deepseek-v4-pro" } },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const report = syncHertaSettings(
-    { workspace, dreamEnabled: false },
-    { global: false, only: new Set(["workspace", "dreamEnabled"]) },
-  );
-  check("写盘：报告 ok", report.workspace !== null && report.workspace.ok === true);
-  check("写盘：报告 changed", report.workspace.changed === true);
-  check("写盘：全局被显式跳过", report.global.skipped === true && report.global.ok === true);
-
-  const after = JSON.parse(readFileSync(wsFile, "utf8"));
-  check("写盘：我们的键落下去了", after.dream.enabled === false);
-  check("写盘：没拥有的键一个字节没动（backend.thinking）", after.backend.thinking === "high");
-  check("写盘：没拥有的键一个字节没动（backend.contract）", after.backend.contract === "standard");
-  check("写盘：没拥有的节整个没被动过（models）", JSON.stringify(after.models) === JSON.stringify({ actor: "deepseek-v4-pro" }));
-
-  const again = syncHertaSettings({ workspace, dreamEnabled: false }, { global: false, only: new Set(["workspace", "dreamEnabled"]) });
-  check("写盘：内容不变就不重复落盘（changed=false）", again.workspace.changed === false);
-
-  const missing = syncHertaSettings({ workspace: join(dir, "不存在"), dreamEnabled: true }, { global: false });
-  check("写盘：工作区不存在 → 如实报失败，且不凭空造目录", missing.workspace.ok === false && !existsSync(join(dir, "不存在")));
-
-  // 临时文件不该留在盘上（rename 掉了）
-  check("写盘：没有残留 .tmp", !existsSync(`${wsFile}.dsh-herta.tmp`));
-
-  const seed = readHeretaSeed({ workspace, legacyVoice: false });
-  check("种子：从工作区文件读到了她的值", seed.values.backendThinking === "high" && seed.values.modelsActor === "deepseek-v4-pro");
-  check("种子：记下了值的来源路径", seed.sources.backendThinking === wsFile);
-
-  rmSync(dir, { recursive: true, force: true });
-}
-
-// ── 7. Config schema 与字段表同源（跨进程那条最危险的漂移） ─────────────────
-//
-// `src/host/index.js` 的 `Config` 是**生成**的，不是手写的。这一节用一份最小
-// 的 schemastery 替身验证生成逻辑的形状：每个字段一个键、kind 决定构造器、
-// 默认值取自 FIELDS。真正的 schemastery 由 DSH 运行时提供（`@deepseek-ai/schemastery`），
-// 这里只检查「生成器读的是字段表」——两处漂移正是本测试要防的东西。
+// ── 3. Config 生成器与字段表同源（照抄 host/index.js 的那段）────────────────
 {
   /** 记录调用链的最小替身，只为看清生成器用了哪个构造器与哪个默认值。 */
   const makeZ = () => {
     const leaf = (kind) => (def) => {
-      const node = { kind, def, volatile: () => node, default: (d) => ((node.def = d), node) };
+      const node = {
+        kind,
+        def,
+        bounds: null,
+        volatile: () => node,
+        default: (d) => ((node.def = d), node),
+        min(v) {
+          node.bounds = { ...(node.bounds ?? {}), min: v };
+          return node;
+        },
+        max(v) {
+          node.bounds = { ...(node.bounds ?? {}), max: v };
+          return node;
+        },
+      };
       return node;
     };
     return {
       boolean: leaf("boolean"),
       string: leaf("string"),
+      number: leaf("number"),
       union(values) {
         const node = { kind: "union", values, default: (d) => ((node.def = d), node), volatile: () => node };
         return node;
@@ -274,14 +197,12 @@ console.log("herta-settings");
       const spec = FIELDS[field];
       if (spec.kind === "boolean") return [field, z.boolean().default(spec.def).volatile()];
       if (spec.kind === "enum") return [field, z.union([...spec.values]).default(spec.def).volatile()];
+      if (spec.kind === "number") return [field, z.number().min(spec.min).max(spec.max).default(spec.def).volatile()];
       return [field, z.string().default(spec.def).volatile()];
     }),
   );
   check("schema：键与字段表逐一对应", Object.keys(generated).sort().join(",") === [...FIELD_NAMES].sort().join(","));
-  check(
-    "schema：每个字段的默认值等于字段表",
-    FIELD_NAMES.every((n) => generated[n].def === FIELDS[n].def),
-  );
+  check("schema：每个字段的默认值等于字段表", FIELD_NAMES.every((n) => generated[n].def === FIELDS[n].def));
   check(
     "schema：枚举字段带上完整取值域",
     FIELD_NAMES.filter((n) => FIELDS[n].kind === "enum").every(
@@ -289,12 +210,135 @@ console.log("herta-settings");
     ),
   );
   check(
-    "schema：kind 决定构造器（boolean / enum→union / path→string）",
+    "schema：kind 决定构造器（boolean / enum→union / number→number / path→string）",
     FIELD_NAMES.every((n) => {
-      const expected = FIELDS[n].kind === "boolean" ? "boolean" : FIELDS[n].kind === "enum" ? "union" : "string";
+      const expected =
+        FIELDS[n].kind === "boolean" ? "boolean" : FIELDS[n].kind === "enum" ? "union" : FIELDS[n].kind === "number" ? "number" : "string";
       return generated[n].kind === expected;
     }),
   );
+  check(
+    "schema：数值字段真的带上 min/max（少了它越界值能写进配置）",
+    FIELD_NAMES.filter((n) => FIELDS[n].kind === "number").every(
+      (n) => generated[n].bounds?.min === FIELDS[n].min && generated[n].bounds?.max === FIELDS[n].max,
+    ),
+  );
+}
+
+// ── 4. 没有第二个真相来源（防回归）──────────────────────────────────────────
+{
+  const syncPath = join(root, "src", "host", "settings-sync.js");
+  check("settings-sync.js 已删除（不再写回她的任何文件）", !existsSync(syncPath));
+  check("lib/settings-sync.js 也不在（构建产物同样清掉）", !existsSync(join(root, "lib", "settings-sync.js")));
+
+  const schemaPath = join(root, "src", "host", "settings-schema.js");
+  const schemaText = readFileSync(schemaPath, "utf8");
+  const gone = [
+    "export function valuesFromGlobalFile",
+    "export function valuesFromWorkspaceFile",
+    "export function globalFileEdits",
+    "export function workspaceFileEdits",
+    "export function sanitizeFollowedFields",
+    "export function valuesFromLegacyVoiceFile",
+    "export const LEGACY_MODEL_ALIASES",
+    "export const LEGACY_VOICE_FIELD_MAP",
+    "export const GLOBAL_FIELD_NAMES",
+    "export const WORKSPACE_FIELD_NAMES",
+  ];
+  for (const needle of gone) {
+    check(`字段表不再导出「写回/种子」时代的符号：${needle.replace("export ", "")}`, !schemaText.includes(needle));
+  }
+
+  const hostText = readFileSync(join(root, "src", "host", "index.js"), "utf8");
+  check("宿主不再注册 followedFields 字段", !/followedFields\s*:/.test(hostText));
+  check("宿主不再监听 loader/volatile-update", !hostText.includes("loader/volatile-update"));
+  check("宿主仍然声明「自带页面」（configure auto:false）", hostText.includes("configure({ auto: false }"));
+
+  const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
+  check("客户端不再有「↺ 跟随整机」", !clientText.includes("↺ 跟随整机"));
+  check("客户端不再写 followedFields", !clientText.includes('"followedFields"'));
+  check("客户端页面不再宣称「同步到整机读的那几份 settings.json」", !clientText.includes("再同步到整机读的那几份"));
+}
+
+// ── 5. 语音偏好真的接了 bridge（防回归）────────────────────────────────────
+{
+  const bridgeText = readFileSync(join(root, "src", "herta-ui", "bridge.ts"), "utf8");
+  for (const member of ["getVoicePrefs", "setVoiceMuted", "setVoiceVolume"]) {
+    check(`整机 bridge 实现并转发 ${member}`, bridgeText.includes(`${member}:`));
+  }
+  check(
+    "bridge 的静音兜底与字段表默认值一致（不静音）",
+    /getVoicePrefs[\s\S]{0,120}muted:\s*false/.test(bridgeText),
+  );
+  check(
+    "bridge 的音量兜底是满音量（1，即字段表的 100）",
+    /getVoicePrefs[\s\S]{0,160}volume:\s*1\b/.test(bridgeText),
+  );
+
+  const prefsText = readFileSync(join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "voice", "voice-prefs.ts"), "utf8");
+  check("整机 voice-prefs 导出 hydrateVoicePrefs", prefsText.includes("export async function hydrateVoicePrefs"));
+  check("整机 voice-prefs 仍有 localStorage 兜底（官网 demo / 独立版不受影响）", prefsText.includes("localStorage.setItem"));
+  check("整机 voice-prefs 在 host 接手时不再写 localStorage", prefsText.includes("remoteOwnsPrefs()"));
+
+  const mainText = readFileSync(join(root, "src", "herta-ui", "main.tsx"), "utf8");
+  check("整机页入口调了 hydrateVoicePrefs", mainText.includes("hydrateVoicePrefs"));
+
+  const typesText = readFileSync(join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "ipc", "bridge-types.ts"), "utf8");
+  check("HertaBridge 契约里有 VoicePrefs", typesText.includes("export interface VoicePrefs"));
+
+  const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
+  check("父窗口应答 getVoicePrefs", clientText.includes('case "getVoicePrefs"'));
+  check("父窗口把 0–100 换算成 0–1 下发", clientText.includes("volume / 100"));
+}
+
+// ── 6. 设置页已从整机删除（防回归）──────────────────────────────────────────
+{
+  const settingsDir = join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "components", "Settings");
+  for (const gone of [
+    "SettingsModal.tsx",
+    "LanguageSettings.tsx",
+    "WindowSettings.tsx",
+    "UpdateSettings.tsx",
+    "VoiceSettings.tsx",
+    "DreamSettings.tsx",
+    "DeepSeekSettings.tsx",
+    "BanzhuanSettings.tsx",
+    "SettingRow.tsx",
+    "Toggle.tsx",
+  ]) {
+    check(`整机设置页组件已删除：${gone}`, !existsSync(join(settingsDir, gone)));
+  }
+  check("KeyPrompt 保留（用户明确要求）", existsSync(join(settingsDir, "KeyPrompt.tsx")));
+  // Select 是**共享**原语（FileViewer 的 LogView 也用它），删设置页时不能顺手删掉。
+  check("Select 保留（它不是设置页独占的：LogView 也在用）", existsSync(join(settingsDir, "Select.tsx")));
+
+  const appText = readFileSync(join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "App.tsx"), "utf8");
+  check("App.tsx 不再渲染 SettingsModal", !appText.includes("SettingsModal"));
+  check("App.tsx 不再持有 settingsOpen", !appText.includes("settingsOpen"));
+  const sidebarText = readFileSync(join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "components", "Sidebar", "Sidebar.tsx"), "utf8");
+  check("侧栏不再有设置入口按钮", !sidebarText.includes("sidebar-settings\""));
+  check("侧栏不再接收 onOpenSettings", !sidebarText.includes("onOpenSettings"));
+}
+
+// ── 7. 凭据缝的取法是实测出来的，不许改回去（防回归）────────────────────────
+{
+  const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
+  // 实测（lab，三次构建）：`ctx.inject(["remote.credentials"], …)` 的回调**不触发**；
+  // `ctx.inject(["remote"], …)` 之后读 `.credentials` 也不可靠（回调时有时无，
+  // 且读属性很可能抛异常）。真正可用的是 `ctx.get("remote.credentials")` ——
+  // 第一次尝试就拿到了（诊断标记 settingsCredentialsAttempts = 1）。
+  check(
+    "凭据缝用 ctx.get('remote.credentials') 解析",
+    clientText.includes('get?.("remote.credentials")'),
+  );
+  check(
+    "凭据缝的**代码**不再用 ctx.inject 取（注释里留着坑的记录，不算违规）",
+    !clientText.includes('ctx.inject(["remote"],'),
+  );
+  check("凭据解析包在 try 里（有的实现读属性会抛）", clientText.includes("function resolveCredentials"));
+  check("解析不到时页面如实显示「凭据服务不可用」而不是假装能用", clientText.includes("凭据服务不可用"));
+  check("保存/清除走真调用（saveCredential / clearCredential）", clientText.includes("saveCredential(props.spec.ref") && clientText.includes("clearCredential(props.spec.ref"));
+  check("密钥不进 Config（不在 FIELDS 里）", !FIELD_NAMES.some((n) => /key/i.test(n)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

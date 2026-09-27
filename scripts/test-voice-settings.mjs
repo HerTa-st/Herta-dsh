@@ -15,7 +15,7 @@
  */
 import {
   DEFAULT_VOICE_SETTINGS,
-  UNWIRED_HOST_FACTS,
+  FALLBACK_HOST_FACTS,
   VOICE_ENGINES,
   buildRealtimeVoiceState,
   emptyKeyStatus,
@@ -161,11 +161,18 @@ check(
   DEFAULT_VOICE_SETTINGS.realtimeVoice === FIELD_DEFAULTS.realtimeVoice,
 );
 
-// 11. UNWIRED_HOST_FACTS 自洽
+// 11. FALLBACK_HOST_FACTS 自洽
+// （原名叫 UNWIRED_HOST_FACTS。改名理由：MiniMax 那一项已经不是"未接线"——
+//  它的事实现在由宿主 `/herta-minimax-state` 与 SSE 的 `state` 帧给出；
+//  这份常量的角色变成"还没拿到快照之前的兜底"。）
 {
-  check("UNWIRED_HOST_FACTS.bundle=false", UNWIRED_HOST_FACTS.bundle === false);
-  check("UNWIRED_HOST_FACTS.runtime=false", UNWIRED_HOST_FACTS.runtime === false);
-  check("UNWIRED_HOST_FACTS 被冻结", Object.isFrozen(UNWIRED_HOST_FACTS));
+  check("FALLBACK_HOST_FACTS.bundle=false", FALLBACK_HOST_FACTS.bundle === false);
+  check("FALLBACK_HOST_FACTS.runtime=false", FALLBACK_HOST_FACTS.runtime === false);
+  check("FALLBACK_HOST_FACTS 被冻结", Object.isFrozen(FALLBACK_HOST_FACTS));
+  check(
+    "兜底里 MiniMax 报「未设置、无克隆」（快照到达前不许假装能用）",
+    FALLBACK_HOST_FACTS.minimaxKey.set === false && FALLBACK_HOST_FACTS.minimaxVoice.phase === "absent",
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

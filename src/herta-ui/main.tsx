@@ -12,6 +12,7 @@
 import { createRoot } from "react-dom/client";
 import { StrictMode } from "react";
 import { App } from "@gui/App";
+import { hydrateVoicePrefs } from "@gui/voice/voice-prefs";
 import { createBridge } from "./bridge.js";
 
 const rootEl = document.getElementById("root");
@@ -24,6 +25,14 @@ document.documentElement.dataset.theme = window.matchMedia?.("(prefers-color-sch
   ? "dark"
   : "light";
 
+const bridge = createBridge();
+
+// 语音的静音与音量：**值归 DSH 的设置页**，这里只是把它拉进来。
+// 不拉的话 `voice-prefs.ts` 会退回它自己的 localStorage —— 那条路在 DSH 里
+// 是死路（DSH 读不到也写不到那个存储），于是设置页上的两个控件会与她的实际
+// 音量脱钩。异步、失败即保持本地值，见该函数的注释。
+void hydrateVoicePrefs(bridge);
+
 createRoot(rootEl).render(
-  StrictMode ? <StrictMode><App bridge={createBridge()} /></StrictMode> : <App bridge={createBridge()} />,
+  StrictMode ? <StrictMode><App bridge={bridge} /></StrictMode> : <App bridge={bridge} />,
 );

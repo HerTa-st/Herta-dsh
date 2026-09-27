@@ -141,9 +141,9 @@ export function createBridge() {
     stageImages: async () => ({ ok: false, message: "整机视图不支持图片暂存" }),
     unstageImage: async () => false,
 
-    // ── 语音（VoiceSettings 的 12 个方法，见 Herta-语音模块-交接.md §2.2）──
+    // ── 语音（VoiceSettings 那 12 个方法的接任者，见 Herta-语音模块-交接.md §2.2）──
     // 全部由父窗口（DSH client 半侧）应答：
-    //   · 引擎 / 实时语音开关 → 插件自持的偏好文件（`/herta-settings`）
+    //   · 引擎 / 实时语音开关 / 静音 / 音量 → DSH 的设置命名空间 `herta`
     //   · 离线模型         → 插件自持的下载端点（`/herta-voice-model`）
     //
     // **三个成员以前是坏的，这里都修了**：
@@ -158,6 +158,13 @@ export function createBridge() {
     getVoiceEngine: () => callOr("getVoiceEngine", "local"),
     setVoiceEngine: (engine: string) =>
       callOr("setVoiceEngine", undefined, { engine }),
+    // 静音与音量：整机那边原本自己存在 localStorage，DSH 侧读不到也写不到。
+    // 现在这两个值由 DSH 设置页持有、经这里下发（`voice-prefs.ts` 接住），
+    // 所以 `callOr` 的兜底要与 `settings-schema.js` 的默认值一致：不静音、满音量。
+    // 单位是 **0–1**（与 HTMLAudioElement / WebAudio 同），设置字段那边是 0–100。
+    getVoicePrefs: () => callOr("getVoicePrefs", { muted: false, volume: 1 }),
+    setVoiceMuted: (muted: boolean) => callOr("setVoiceMuted", undefined, { muted }),
+    setVoiceVolume: (volume: number) => callOr("setVoiceVolume", undefined, { volume }),
     downloadVoiceModel: () =>
       callOr("downloadVoiceModel", {
         phase: "absent",
@@ -178,10 +185,13 @@ export function createBridge() {
     onMiniMaxVoice: () => () => {},
     clearMiniMaxKey: () =>
       callOr("clearMiniMaxKey", {
-        ok: true,
-        status: { set: false, hint: null, encrypted: false },
+        // 兜底也如实：父窗口没应答就是**没删成**，不能回 ok:true。
+        ok: false,
+        status: { set: false, hint: "父窗口没有应答", encrypted: true },
       }),
-    setMiniMaxKey: async () => ({ ok: false, reason: "rejected" }),
+    // 真存：父窗口把它写进 DSH 的凭据存储（ref `MINIMAX_API_KEY`）。
+    setMiniMaxKey: (key: string) =>
+      callOr("setMiniMaxKey", { ok: false, reason: "父窗口没有应答" }, { key }),
     cancelVoiceModelDownload: () => callOr("cancelVoiceModelDownload", undefined),
     removeVoiceModel: () =>
       callOr("removeVoiceModel", {
@@ -207,8 +217,16 @@ export function createBridge() {
     setLocale: (locale: string) => callOr("setLocale", undefined, { locale }),
     getCloseToTray: () => callOr("getCloseToTray", true),
     setCloseToTray: (enabled: boolean) => callOr("setCloseToTray", undefined, { enabled }),
-    getDeepSeekKeyStatus: () => callOr("getDeepSeekKeyStatus", { set: true, hint: "dsh", encrypted: true }),
-    // 密钥由 DSH 自己管，这里如实拒绝而不是假装成功。
+    // 密钥：**如实报告，不假装成功**。
+    //
+    // 上一版 `getDeepSeekKeyStatus` 的兜底值是 `{set:true}` —— 父窗口没应答时
+    // 界面显示「密钥已设置」，而谁也不知道 DSH 有没有那把钥匙。现在兜底是
+    // 「未设置」：证明不了的可用性一律不声称（与上面 `downloadVoiceModel`
+    // 那条同一个口径）。父窗口应答时读的是 DSH 真正的凭据缝。
+    getDeepSeekKeyStatus: () =>
+      callOr("getDeepSeekKeyStatus", { set: false, hint: null, encrypted: true }),
+    // DeepSeek 密钥归 DSH 自己的模型配置管（凭据 ref `DEEPSEEK_API_KEY`），
+    // 她的界面里没有第二个填它的地方：这条写路径如实拒绝。
     setDeepSeekKey: async () => ({ ok: false, reason: "rejected" as const }),
     clearDeepSeekKey: async () => ({ ok: true as const, status: { set: false, hint: "", encrypted: false } }),
 

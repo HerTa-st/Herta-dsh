@@ -33,14 +33,22 @@ import { fullSnapshot, nodesToRecord, toBubbles } from "../shared/mapping.js";
 // 所以既能 Node 单测，也能被 esbuild 打进这份 bundle。
 import {
   buildRealtimeVoiceState,
-  emptyKeyStatus,
   isVoiceEngine,
   normalizeVoiceSettings,
 } from "../host/voice-settings-shared.js";
 // 设置字段表：与宿主**同一份**（无 import 的纯数据模块，esbuild 直接内联）。
-// 页面的标签、枚举选项、默认值、以及「哪些字段属于哪份文件」全部从它读 ——
-// 客户端不再自持第二份字段清单（那正是「设置页能选、写回时被判非法」的来源）。
-import { FIELDS, normalizeSettings } from "../host/settings-schema.js";
+// 页面的标签、枚举选项、默认值、以及「哪些字段整机真的会读」全部从它读 ——
+// 客户端不再自持第二份字段清单。
+import { FIELDS, normalizeSettings, UNWIRED_FIELD_NAMES } from "../host/settings-schema.js";
+// 分组表从宿主侧那份**纯数据**模块读（与 settings-schema 同一套理由：build.mjs 把
+// `src/host/*.js` 平铺进 `lib/`，客户端那份由 esbuild 内联）。同一份名单也被
+// `scripts/test-herta-settings.mjs` 导入 —— 于是「字段进了分组」这件事有单测兜底。
+import { SETTINGS_GROUPS } from "../host/settings-groups.js";
+// MiniMax 语音的两件纯逻辑：base64 → Int16 PCM 的解码，与按 utteranceId/seq 交付的
+// 播放队列状态机。**零 import** 是刻意的 —— 它能被 Node 直接单测
+// （`scripts/test-minimax-pcm.mjs`），所以「顺序 / 去重 / 打断 / 停止」这些最容易
+// 写错的地方不靠浏览器验证。
+import { createPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
 
 /** Cordis 插件名，与 cordis.patch.yml 里的 loader 条目 id 一致。 */
 const name = "herta";
@@ -93,17 +101,6 @@ function machineValues(): Record<string, unknown> {
   return normalizeSettings(machineForm?.getSnapshot().value);
 }
 
-/**
- * 当前被声明「跟随整机」的字段名单。
- *
- * 这份名单由客户端写进 Config 的 `followedFields`（宿主侧读它以跳过种子），
- * 不是页面上的字段 —— 见 `src/host/index.js` 里该字段的注释。
- */
-function followedFields(): string[] {
-  const raw = machineForm?.getSnapshot().value?.followedFields;
-  return Array.isArray(raw) ? raw.filter((name): name is string => typeof name === "string") : [];
-}
-
 /** 一趟原子写入：一次 revision 栅栏、一次失败重读。 */
 async function writeMachineOps(ops: readonly Record<string, unknown>[]): Promise<boolean> {
   const field = String((ops[0]?.path as readonly string[] | undefined)?.[0] ?? "");
@@ -122,28 +119,19 @@ async function writeMachineOps(ops: readonly Record<string, unknown>[]): Promise
   }
 }
 
-/** 写一个设置字段。顺带把它从「跟随整机」名单里摘掉 —— 用户接手了。 */
+/** 写一个设置字段。 */
 async function writeMachineField(field: string, value: unknown): Promise<boolean> {
-  const followed = followedFields();
-  const ops: Record<string, unknown>[] = [{ op: "set", path: [field], value }];
-  if (followed.includes(field)) {
-    ops.push({ op: "set", path: ["followedFields"], value: followed.filter((name) => name !== field) });
-  }
-  return writeMachineOps(ops);
+  return writeMachineOps([{ op: "set", path: [field], value }]);
 }
 
 /**
- * 声明「这一项跟随整机」：清掉 DSH 的覆盖，并把它记进 `followedFields`。
+ * 读一个设置字段的当前值（已归一）。
  *
- * **只 unset 是不够的**：下一轮种子会把整机那边的值再搬进来，覆盖立刻"复活"，
- * 按钮看起来毫无作用。名单才是那条声明的载体。
+ * iframe 的应答器要用它 —— 那里是**同步**应答（`getLocale` 这类不能 await HTTP），
+ * 所以只能读客户端手上的这份快照。
  */
-async function followMachineField(field: string): Promise<boolean> {
-  const next = [...new Set([...followedFields(), field])];
-  return writeMachineOps([
-    { op: "unset", path: [field] },
-    { op: "set", path: ["followedFields"], value: next },
-  ]);
+function machineField(field: string): unknown {
+  return machineValues()[field];
 }
 
 /** 记一条设置相关的诊断，便于从无头浏览器外部确认「到底写没写」。 */
@@ -155,17 +143,194 @@ function markMachine(field: string, value: unknown): void {
 }
 
 /**
- * 语音偏好的读写口 —— iframe 那边 12 个应答器都读它。
+ * DSH 的**凭据缝**（`ctx.remote.credentials`）—— 只列本文件用到的三个成员。
  *
- * **对外形状刻意保持不变**（`{getSnapshot().value, set(field, value)}`）：整机
- * iframe 的 `VoiceSettings` 组件从上一版起就按这个形状调用，形状一改，
- * 面板会静默显示默认值。
+ * ## 为什么密钥不走 Config
+ *
+ * Config 落在 profile 的 `cordis.patch.yml` 里，那是**明文 YAML**。密钥走那条路
+ * 等于把它们公开。凭据缝才是它的位置：值的读写分两半，读的那半只回
+ * `{configured, source, writable}`（**没有能装值的槽位**），所以它才能安全地跨
+ * Remote 走到浏览器；写的那半是 `set(ref, value)`，落 `$DSH_HOME/.credentials.yaml`
+ * （0600，file 层，可写）。
+ *
+ * ## 为什么是 `remote.credentials` 而不是自己开一条 HTTP
+ *
+ * 官方设置页（`dsh-client-ui-settings-models`）存密钥走的就是这一套
+ * （`lib/client.js:2787-2795`）。自己再开一条写入口就是第二个真相来源 ——
+ * 上一版正因这个理由删掉了 `/herta-settings`。
+ *
+ * 服务缺席（无头 / SDK 组合）时这里保持 `null`，页面上的密钥行显示「不可用」
+ * 而不是抛错：`ctx.inject` 的回调不触发，别的部分照常。
+ */
+interface CredentialsRemote {
+  describe(refs: readonly string[]): Promise<{
+    ok: boolean;
+    value?: Record<string, { configured?: boolean; source?: string; writable?: boolean }>;
+    error?: { message?: string };
+  }>;
+  set(ref: string, value: string): Promise<{ ok: boolean; error?: { message?: string } }>;
+  unset(ref: string): Promise<{ ok: boolean; error?: { message?: string } }>;
+}
+
+/** 由 `installSettingsSection` 里的惰性 inject 赋值；缺席即 null。 */
+let credentialsRemote: CredentialsRemote | null = null;
+
+/**
+ * 凭据缝**晚一点**才出现的订阅者。
+ *
+ * 页面的密钥行在挂载时就会查一次状态，而 `remote.credentials` 可能是握手之后
+ * 才挂上来的（见 `installSettingsSection` 里的注释）。没有这张订阅表，那一次
+ * 查询会永久停在「凭据服务不可用」，即使服务半秒后就绪 —— 那是「界面在说谎」，
+ * 正是这一轮要消灭的东西。
+ */
+const credentialsSubs = new Set<() => void>();
+
+/** 绑定凭据缝并通知所有正在等它的行。 */
+function bindCredentialsRemote(next: CredentialsRemote): void {
+  credentialsRemote = next;
+  for (const cb of credentialsSubs) {
+    try {
+      cb();
+    } catch {
+      /* 一个订阅者坏掉不该影响别的 */
+    }
+  }
+}
+
+/** 订阅「凭据缝就绪」。返回退订函数。 */
+function subscribeCredentials(cb: () => void): () => void {
+  credentialsSubs.add(cb);
+  return () => {
+    credentialsSubs.delete(cb);
+  };
+}
+
+/**
+ * 解析凭据缝（`remote.credentials`）。拿不到就返回 `undefined`，**永不抛错**。
+ *
+ * ## 为什么不用 `ctx.inject(["remote.credentials"], …)`
+ *
+ * 实测（lab，三次构建）：
+ *   · `inject(["remote.credentials"])` —— 回调**不触发**，三行密钥全「不可用」；
+ *   · `inject(["remote"])` 之后读 `scoped.remote.credentials` —— 也不可靠
+ *     （第一次构建里那次回调确实触发了，可那次没读属性；之后两次连回调都没来，
+ *     计时器也没到超时，与「读属性抛异常」一致）。
+ *
+ * 所以这里不再依赖注入时机，也不假设属性读取会安静地返回 undefined ——
+ * 两种取法都包在 try 里，失败就交给上层的**有界轮询**再试。
+ * 轮询不是洁癖：`credentials` 是握手之后挂到 `remote` 上的命名空间，
+ * 客户端插件挂载时它常常还没到。
+ *
+ * @param ctx - 插件（或注入作用域）的 cordis 上下文。
+ * @returns 凭据缝，或 undefined。
+ */
+function resolveCredentials(ctx: {
+  get?(name: string): unknown;
+  remote?: unknown;
+}): CredentialsRemote | undefined {
+  try {
+    const direct = ctx.get?.("remote.credentials");
+    if (direct !== undefined && direct !== null) return direct as CredentialsRemote;
+  } catch {
+    // 服务路径解不开：退回下面那次属性读取。
+  }
+  try {
+    const remote = ctx.remote;
+    if (remote === null || remote === undefined || typeof remote !== "object") return undefined;
+    return (remote as { credentials?: CredentialsRemote }).credentials;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 有界轮询凭据缝并绑定；每次结果都写进诊断标记（`__DSH_HERTA__`）。 */
+function watchCredentials(
+  ctx: { get?(name: string): unknown; remote?: unknown; effect?(cb: () => unknown, label?: string): unknown },
+  mark: Record<string, unknown>,
+): void {
+  const already = resolveCredentials(ctx);
+  if (already !== undefined) {
+    bindCredentialsRemote(already);
+    mark.settingsCredentialsBound = true;
+    mark.settingsCredentialsAttempts = 1;
+    return;
+  }
+  const INTERVAL_MS = 500;
+  const MAX_ATTEMPTS = 40; // 20 秒
+  let attempts = 0;
+  const timer = setInterval(() => {
+    attempts += 1;
+    const found = resolveCredentials(ctx);
+    if (found !== undefined) {
+      bindCredentialsRemote(found);
+      mark.settingsCredentialsBound = true;
+      mark.settingsCredentialsAttempts = attempts;
+      clearInterval(timer);
+      return;
+    }
+    if (attempts >= MAX_ATTEMPTS) {
+      mark.settingsCredentialsError = `remote.credentials 在 ${(MAX_ATTEMPTS * INTERVAL_MS) / 1000} 秒内没有出现（试了 ${attempts} 次）`;
+      clearInterval(timer);
+    }
+  }, INTERVAL_MS);
+  // 随插件 fiber 一起释放，别留下没人清的定时器。
+  ctx.effect?.(() => () => clearInterval(timer), "dsh-herta: 等 remote.credentials");
+}
+
+/** 查一个密钥「设了没有」。拿不到服务时返回 undefined（页面显示「不可用」）。 */
+async function credentialStatus(
+  ref: string,
+): Promise<{ configured: boolean; writable: boolean } | undefined> {
+  if (credentialsRemote === null) {
+    markMachine("credentialsStatusError", "no-remote");
+    return undefined;
+  }
+  try {
+    const res = await credentialsRemote.describe([ref]);
+    if (!res.ok) {
+      // 注入成功但调用失败，是最容易看错的一种：注入标记为 true，页面却全线
+      // 「不可用」。所以这里单独记一条，好从无头浏览器外部一眼分清。
+      markMachine("credentialsStatusError", res.error?.message ?? "describe rejected");
+      return undefined;
+    }
+    const info = res.value?.[ref];
+    return { configured: info?.configured === true, writable: info?.writable !== false };
+  } catch (error) {
+    markMachine("credentialsStatusError", String((error as Error)?.message ?? error));
+    return undefined;
+  }
+}
+
+/** 存一个密钥。返回 null 表示成功，否则是给用户看的原因。 */
+async function saveCredential(ref: string, value: string): Promise<string | null> {
+  if (credentialsRemote === null) return "这个部署没有挂凭据服务";
+  try {
+    const res = await credentialsRemote.set(ref, value);
+    return res.ok ? null : (res.error?.message ?? "宿主拒绝了这次写入");
+  } catch (error) {
+    return String((error as Error)?.message ?? error);
+  }
+}
+
+/** 清掉一个密钥。返回 null 表示成功，否则是原因。 */
+async function clearCredential(ref: string): Promise<string | null> {
+  if (credentialsRemote === null) return "这个部署没有挂凭据服务";
+  try {
+    const res = await credentialsRemote.unset(ref);
+    return res.ok ? null : (res.error?.message ?? "宿主拒绝了这次删除");
+  } catch (error) {
+    return String((error as Error)?.message ?? error);
+  }
+}
+
+/**
+ * 语音偏好的读写口 —— iframe 那边的语音应答器读它。
+ *
+ * **对外形状刻意保持不变**（`{getSnapshot().value, set(field, value)}`）。
  *
  * 0.1.7-rc.2 起背后是 DSH 的设置表单（`ctx.configForms.get("herta")`）：
- * 同一个命名空间既喂这张面板、也喂 DSH 自己设置页里的「黑塔」一页，
- * 而且写入会落进 profile 的 `cordis.patch.yml`。上一版走的是插件自持的
- * HTTP 端点（`/herta-settings`）—— 那是 settingsScope 被移除后的临时替代，
- * 现在有正式入口了就把那条路拆了（少一个真相来源）。
+ * 同一个命名空间既喂这些应答器、也喂 DSH 自己设置页里的「黑塔」一页，
+ * 而且写入会落进 profile 的 `cordis.patch.yml`。
  */
 const voiceScope = {
   getSnapshot(): { value?: unknown } {
@@ -271,6 +436,549 @@ function voiceModelFacts(): Record<string, unknown> {
       totalBytes: voiceModelState?.totalBytes,
       unpackedBytes: voiceModelState?.unpackedBytes,
     },
+  };
+}
+
+// ── MiniMax 语音（PCM 播放 + 设置页那一行）────────────────────────────────────
+//
+// 宿主把合成好的 PCM 从 `/herta-minimax-events`（SSE）推过来，这里负责「放出来」。
+// 两条播放路径**二选一**：
+//
+//   · **有整机 iframe**（甲方案）→ 用既有的 `push("voice", …)` 把帧原样推给
+//     iframe，由她自己的 WebAudio 播放器放。样式、音量、她的语音偏好都在那一侧，
+//     声音听起来与官网 demo 一模一样。
+//   · **没有 iframe**（用户停在标准视图/别的页签）→ 在父窗口自己用 WebAudio 放
+//     同一段 PCM。
+//
+// ## 为什么有 iframe 就不再自己放
+//
+// 两条路同时放就是**双声**：同一句话叠着响，而且两条路各自有自己的音量与调度
+// 游标，听起来是回声。所以 sink 只能有一个，而且它是**瞬时的**：`push` 时
+// 现看 `frameRef.current?.contentWindow` 在不在，不在才走父窗口那条。
+//
+// ## 为什么必须处理自动播放策略
+//
+// `AudioContext` 在用户手势之前创建会一直是 `suspended`（浏览器拦自动播），
+// 此时 `start()` 不报错、就是不出声。所以：懒建 + 每次播放前 `resume()`；
+// `resume()` 被拒就把状态记下来（`__DSH_HERTA__.minimaxAudioBlocked`），
+// 让「点了页面才会出声」这件事可观测，而不是静默无声。
+//
+// ## 为什么 state 既有 SSE 帧又要轮询
+//
+// SSE 的 `state` 帧只在宿主**主动报状态**时到（认领完成、回落、到上限），
+// 它很快但**不保证到达**（页面刷新、代理断流都会漏）；轮询是保底的事实来源，
+// 代价是 5 秒的延迟。两条都要：快的那条负责即时反馈，慢的那条负责「界面不会
+// 永远停在旧状态」。轮询**只在设置页那一行挂载期间开**（没有订阅者就没有定时器）。
+
+/** 宿主推 PCM 的 SSE 端点（同源）。 */
+const MINIMAX_EVENTS_URL = "/herta-minimax-events";
+/** 状态快照 + 认领动作的端点（GET 读、POST 动作）。 */
+const MINIMAX_STATE_URL = "/herta-minimax-state";
+/** 设置页那一行的轮询间隔。 */
+const MINIMAX_POLL_MS = 5000;
+
+/**
+ * 当前挂着的整机 iframe。
+ *
+ * 用「最后注册的那个」而不是全局唯一：整机视图切换会话时会卸载重挂，
+ * 卸载时把引用清掉，于是 `push` 立刻退到父窗口那条路，不会往一个已经
+ * 卸载的文档里 postMessage（那会静默丢掉，声音就永远不响了）。
+ */
+let fullFrame: HTMLIFrameElement | null = null;
+
+/** 整机视图挂载时登记自己的 iframe；返回注销函数。 */
+function registerVoiceSink(frame: HTMLIFrameElement | null): () => void {
+  fullFrame = frame;
+  return () => {
+    if (fullFrame === frame) fullFrame = null;
+  };
+}
+
+/** iframe 的 window；不在（或已卸载）就是 null —— 决定这一刻声音从哪出来。 */
+function voiceSinkWindow(): Window | null {
+  const win = fullFrame?.contentWindow;
+  return win === null || win === undefined ? null : win;
+}
+
+/** 往 iframe 推一条 voice 事件。形状**逐字**是 iframe 侧 `bridge.onVoice` 认的那个。 */
+function pushVoiceToFrame(payload: Record<string, unknown>): void {
+  const win = voiceSinkWindow();
+  if (win === null) return;
+  win.postMessage({ __herta: true, kind: "event", event: "voice", payload }, window.location.origin);
+}
+
+/** AudioContext 与主音量（懒建，见上面那段「自动播放策略」）。 */
+let voiceAudio: { ctx: AudioContext; gain: GainNode } | null = null;
+/** 每条 utterance 当前在播的源（打断时要停它）。 */
+const voiceSources = new Map<string, Set<AudioBufferSourceNode>>();
+/** 每条 utterance 下一次该排在哪（同一句的多段首尾相接，不叠声）。 */
+const voiceCursor = new Map<string, number>();
+/** 游标表的上界。只防内存（一页开着跑一整天）：过线整体清掉，旧游标不再需要。 */
+const VOICE_CURSOR_LIMIT = 64;
+/** 已经申请过「用户一动手就 resume」的监听。 */
+let resumeArmed = false;
+
+/** 记一条语音诊断（无头浏览器 / CDP 从 `__DSH_HERTA__` 读）。 */
+function markMinimax(field: string, value: unknown): void {
+  const mark = (globalThis as Record<string, unknown>).__DSH_HERTA__ as
+    | Record<string, unknown>
+    | undefined;
+  if (mark !== undefined) mark[field] = value;
+}
+
+/**
+ * 取（必要时建）AudioContext，并尽力把它唤醒。
+ *
+ * 返回 null 表示这个浏览器根本没有 WebAudio（或构造抛错）—— 调用方静默降级，
+ * 与 `playUrl` 吞掉失败同一个口径：**静音是可以接受的，白屏不是**。
+ */
+function ensureVoiceAudio(): AudioContext | null {
+  if (voiceAudio === null) {
+    try {
+      const Ctor =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (Ctor === undefined) return null;
+      const ctx = new Ctor();
+      const gain = ctx.createGain();
+      gain.connect(ctx.destination);
+      ctx.addEventListener?.("statechange", () => {
+        markMinimax("minimaxAudioState", ctx.state);
+        markMinimax("minimaxAudioBlocked", ctx.state === "suspended");
+      });
+      voiceAudio = { ctx, gain };
+    } catch {
+      markMinimax("minimaxAudioError", "AudioContext 构造失败");
+      return null;
+    }
+  }
+  const { ctx } = voiceAudio;
+  // 音量与静音是设置页那两个真字段（与录音片段那条路共用同一个来源）。
+  try {
+    const volume = Number(machineField("voiceVolume"));
+    voiceAudio.gain.gain.value = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume / 100)) : 1;
+  } catch {
+    /* 设置读不到就用 1 */
+  }
+  if (ctx.state === "suspended") {
+    // 被拦是**常态**（用户还没点过页面）。不抛、不重试失败路径，只把状态标出来；
+    // 真正的重试挂在第一次用户手势上（见 armVoiceResume）。
+    void ctx.resume().then(
+      () => {
+        markMinimax("minimaxAudioState", ctx.state);
+        markMinimax("minimaxAudioBlocked", ctx.state === "suspended");
+      },
+      () => {
+        markMinimax("minimaxAudioBlocked", true);
+        armVoiceResume();
+      },
+    );
+  }
+  return ctx;
+}
+
+/**
+ * 等用户第一次动手时再 resume 一次。
+ *
+ * 浏览器只允许「有用户手势」的那次 `resume()` 成功，所以被拦之后唯一的出路
+ * 就是在下一次点击/按键时补一枪。只挂一次，成功即卸。
+ */
+function armVoiceResume(): void {
+  if (resumeArmed) return;
+  resumeArmed = true;
+  const onGesture = (): void => {
+    const ctx = voiceAudio?.ctx;
+    if (ctx === undefined) return;
+    void ctx.resume().then(
+      () => {
+        markMinimax("minimaxAudioBlocked", ctx.state === "suspended");
+        if (ctx.state !== "suspended") {
+          window.removeEventListener("pointerdown", onGesture);
+          window.removeEventListener("keydown", onGesture);
+        }
+      },
+      () => {
+        /* 还是不让，就继续等下一次手势 */
+      },
+    );
+  };
+  window.addEventListener("pointerdown", onGesture);
+  window.addEventListener("keydown", onGesture);
+}
+
+/** 停掉某条 utterance（或全部）在父窗口播的声音，并清掉它的排队与游标。 */
+function stopLocalVoice(utteranceId?: string): void {
+  const ids = utteranceId === undefined ? [...voiceSources.keys()] : [utteranceId];
+  for (const id of ids) {
+    for (const source of voiceSources.get(id) ?? []) {
+      try {
+        source.onended = null;
+        source.stop();
+      } catch {
+        /* 已经结束了 */
+      }
+    }
+    voiceSources.delete(id);
+    voiceCursor.delete(id);
+  }
+}
+
+/** 一条 PCM 交给 WebAudio：调度到 `max(now, 该 utterance 的游标)`，首尾相接。 */
+function playLocalVoice(
+  utteranceId: string,
+  seq: number,
+  samples: Int16Array,
+  sampleRate: number,
+  durationMs: number,
+): void {
+  if (machineField("voiceMuted") === true) return;
+  if (samples.length === 0 || !(sampleRate > 0)) return;
+  const ctx = ensureVoiceAudio();
+  if (ctx === null) return;
+  try {
+    const buffer = ctx.createBuffer(1, samples.length, sampleRate);
+    const channel = buffer.getChannelData(0);
+    for (let i = 0; i < samples.length; i += 1) {
+      // Int16 → [-1, 1)。32768 而不是 32767：与宿主/整机那边同一套换算，
+      // 负满量程才是精确的。
+      channel[i] = (samples[i] ?? 0) / 32768;
+    }
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(voiceAudio!.gain);
+    const at = Math.max(ctx.currentTime, voiceCursor.get(utteranceId) ?? 0);
+    let set = voiceSources.get(utteranceId);
+    if (set === undefined) {
+      set = new Set();
+      voiceSources.set(utteranceId, set);
+    }
+    set.add(source);
+    // 兜底与自然结束都走同一个收尾，且都带上**这一段自己的身份**：
+    // `complete` 只认 {utteranceId, seq}，所以先到的那次生效、后到的是空操作。
+    // 少了身份，兜底定时器会把队首的**下一段**误当成"播完了"（提前切句）。
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      localQueue.complete(utteranceId, seq);
+    };
+    source.onended = (): void => {
+      set!.delete(source);
+      if (set!.size === 0) voiceSources.delete(utteranceId);
+      settle();
+    };
+    source.start(at);
+    if (!voiceCursor.has(utteranceId) && voiceCursor.size >= VOICE_CURSOR_LIMIT) voiceCursor.clear();
+    voiceCursor.set(utteranceId, at + buffer.duration);
+    markMinimax("minimaxAudioPlays", ((globalThis.__DSH_HERTA__?.minimaxAudioPlays as number) ?? 0) + 1);
+    markMinimax("minimaxAudioLast", `#${samples.length}/${sampleRate}Hz`);
+    // `onended` 在某些情况下可能不来（上下文被回收、调度被掐），到点强制推进队列，
+    // 否则下一条 utterance 的第一句会永远排不上。
+    const guardMs = Math.max(0, durationMs) + Math.round((at - ctx.currentTime) * 1000) + 250;
+    setTimeout(settle, guardMs);
+  } catch {
+    markMinimax("minimaxAudioError", "调度失败");
+    localQueue.complete(utteranceId, seq);
+  }
+}
+
+/**
+ * 父窗口这条路的播放队列（纯逻辑在 `minimax-pcm.ts`）。
+ *
+ * 只在**没有 iframe** 的时候真的被推东西；有 iframe 时它一个单元都不会收到。
+ */
+const localQueue = createPlaybackQueue<{
+  samples: Int16Array;
+  sampleRate: number;
+  durationMs: number;
+}>({
+  onPlay: (item) => {
+    playLocalVoice(
+      item.utteranceId,
+      item.seq,
+      item.payload.samples,
+      item.payload.sampleRate,
+      item.payload.durationMs,
+    );
+  },
+  onStop: (id) => {
+    stopLocalVoice(id);
+  },
+});
+
+/**
+ * 一个 `tts` 帧：解码 → 按「有没有整机 iframe」二选一交付。
+ *
+ * 解码失败（帧坏了）只记账、不抛：一条坏帧不该让整条 SSE 连接崩掉，
+ * 后面的句子还得继续念。
+ */
+function onMiniMaxPcm(frame: {
+  utteranceId?: unknown;
+  seq?: unknown;
+  samplesB64?: unknown;
+  sampleRate?: unknown;
+  durationMs?: unknown;
+}): void {
+  const utteranceId = typeof frame.utteranceId === "string" ? frame.utteranceId : "";
+  const seq = typeof frame.seq === "number" ? frame.seq : 0;
+  const sampleRate = typeof frame.sampleRate === "number" ? frame.sampleRate : 0;
+  const durationMs = typeof frame.durationMs === "number" ? frame.durationMs : 0;
+  if (utteranceId === "" || typeof frame.samplesB64 !== "string") {
+    markMinimax("minimaxFrameDropped", "缺少 utteranceId / samplesB64");
+    return;
+  }
+  let samples: Int16Array;
+  try {
+    samples = decodePcmFrame(frame.samplesB64).samples;
+  } catch (error) {
+    markMinimax("minimaxFrameDropped", String((error as Error)?.message ?? error));
+    return;
+  }
+  markMinimax("minimaxLastFrame", `${utteranceId}#${seq} ${samples.length} samples`);
+
+  // 甲方案（有 iframe）：只推给它。**不**自己再放一遍 —— 那就是双声。
+  // 形状逐字是 `{ kind:"tts", utteranceId, seq, samples, sampleRate, durationMs }`，
+  // `kind:"tts"` 也是唯一能在 iframe 里放出声音的 kind（`cue` 走的是另一套协议）。
+  if (voiceSinkWindow() !== null) {
+    pushVoiceToFrame({ kind: "tts", utteranceId, seq, samples, sampleRate, durationMs });
+    return;
+  }
+  // 标准视图（没有 iframe）：父窗口自己放。
+  localQueue.push(utteranceId, seq, { samples, sampleRate, durationMs });
+}
+
+/** 一条 `ttsStop` 帧：有 iframe 就推给它，没有就停父窗口这边。 */
+function onMiniMaxStop(utteranceId: string): void {
+  if (voiceSinkWindow() !== null) {
+    pushVoiceToFrame({ kind: "ttsStop", utteranceId });
+    return;
+  }
+  localQueue.stop(utteranceId);
+}
+
+/** 最近一次宿主状态快照；null = 还没问过。 */
+let miniMaxState: Record<string, unknown> | null = null;
+/** 设置页那一行的订阅者。 */
+const miniMaxSubs = new Set<(state: Record<string, unknown> | null) => void>();
+/** 轮询定时器：只有那一行挂载期间才存在。 */
+let miniMaxTimer: ReturnType<typeof setInterval> | null = null;
+/** 订阅者数量变 0 之后要清掉的那些（见 `subscribeMiniMax`）。 */
+function notifyMiniMax(): void {
+  for (const cb of miniMaxSubs) {
+    try {
+      cb(miniMaxState);
+    } catch {
+      /* 一个订阅者坏掉不该影响别的 */
+    }
+  }
+}
+
+/** 拉一次宿主快照。失败**保留上一次** —— 别把界面打回「未知」。 */
+async function refreshMiniMax(): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(MINIMAX_STATE_URL, { headers: { accept: "application/json" } });
+    if (res.ok) miniMaxState = (await res.json()) as Record<string, unknown>;
+  } catch {
+    /* 拿不到就沿用上一次 */
+  }
+  notifyMiniMax();
+  return miniMaxState;
+}
+
+/** 发一个动作（目前只有 adopt = 重新认领），把宿主回的快照回填。 */
+async function postMiniMaxAction(action: string): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(MINIMAX_STATE_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (res.ok) miniMaxState = (await res.json()) as Record<string, unknown>;
+    else markMinimax("minimaxActionError", `${action} → HTTP ${res.status}`);
+  } catch (error) {
+    markMinimax("minimaxActionError", String((error as Error)?.message ?? error));
+  }
+  notifyMiniMax();
+  return miniMaxState;
+}
+
+/**
+ * 设置页那一行的订阅口：挂上就开 5 秒轮询，卸载就停。
+ *
+ * 「SSE 的 `state` 帧到了也立刻回填」由 `dispatchMiniMaxFrame` 直接改
+ * `miniMaxState` 再 `notifyMiniMax()` 完成 —— 这里不再单独订阅 SSE，
+ * 因为设置页与播放器看到的是**同一份**宿主快照。
+ */
+function subscribeMiniMax(cb: (state: Record<string, unknown> | null) => void): () => void {
+  miniMaxSubs.add(cb);
+  void refreshMiniMax();
+  if (miniMaxTimer === null) {
+    miniMaxTimer = setInterval(() => {
+      void refreshMiniMax();
+    }, MINIMAX_POLL_MS);
+  }
+  return () => {
+    miniMaxSubs.delete(cb);
+    if (miniMaxSubs.size === 0 && miniMaxTimer !== null) {
+      clearInterval(miniMaxTimer);
+      miniMaxTimer = null;
+    }
+  };
+}
+
+/** `lastError` / `refusal` 这些机器码的中文说法。没见过的码原样显示。 */
+const MINIMAX_ERROR_LABELS: Record<string, string> = {
+  no_key: "没有填 MiniMax 密钥",
+  no_clone_key: "没有填克隆用密钥",
+  auth: "鉴权失败（密钥不对或已失效）",
+  invalid_key: "密钥格式不被接受",
+  quota: "额度用尽",
+  rate: "被限流（稍后重试）",
+  network: "网络到不了 MiniMax",
+  http: "MiniMax 返回了 HTTP 错误",
+  cancelled: "这次认领被取消了",
+  other: "别的原因",
+  voice_missing: "克隆音色在 MiniMax 那边不见了",
+};
+
+/** 把一个机器码翻成中文；已经是中文/未知就原样。 */
+function miniMaxErrorText(code: unknown): string {
+  const key = typeof code === "string" ? code : "";
+  if (key === "") return "未知原因";
+  return MINIMAX_ERROR_LABELS[key] ?? key;
+}
+
+/** 冷却到期时间：ISO → 本地时间；没有就是 null。 */
+function miniMaxRetryText(retryAt: unknown): string | null {
+  if (typeof retryAt !== "string" || retryAt === "") return null;
+  const at = new Date(retryAt);
+  if (Number.isNaN(at.getTime())) return retryAt;
+  const seconds = Math.max(0, Math.round((at.getTime() - Date.now()) / 1000));
+  return `${at.toLocaleTimeString()}（约 ${seconds} 秒后）`;
+}
+
+/**
+ * SSE 一帧的派发。
+ *
+ * 与 iframe 那侧的 `bridge.onVoice` 认的是同一组 kind：`tts` / `ttsStop`，
+ * 外加宿主的状态帧 `state`（它没有独立的推送通道，就搭在这条流上）。
+ */
+function dispatchMiniMaxFrame(frame: Record<string, unknown>): void {
+  if (frame.kind === "tts") {
+    onMiniMaxPcm(frame);
+    return;
+  }
+  if (frame.kind === "ttsStop") {
+    const id = typeof frame.utteranceId === "string" ? frame.utteranceId : "";
+    if (id !== "") onMiniMaxStop(id);
+    return;
+  }
+  // 状态快照：既有 `kind:"state"` 的 SSE 帧，也有 GET 端点的裸快照，
+  // 两者形状一样，靠 `voice` / `synth` 这两个键认出来。
+  if (frame.voice !== undefined || frame.synth !== undefined || frame.kind === "state") {
+    miniMaxState = frame;
+    markMinimax("minimaxEngine", frame.engine);
+    markMinimax("minimaxEngineNote", frame.engineNote ?? null);
+    notifyMiniMax();
+  }
+}
+
+/** 把 `data:` 那一行解析成帧。坏 JSON（截断/乱码）返回 null，绝不抛。 */
+function parseSseData(data: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(data);
+    return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SSE 的**单例 + 引用计数**。
+ *
+ * `apply` 理论上一页只跑一次，但同一页被挂两次（重复的 loader 条目、调试时手动
+ * 再挂）的代价是两条 `EventSource`、同一段 PCM 到两次 —— 而队列是按帧去重的，
+ * 两条连接各自去重、各自播一遍，听起来就是回声。所以这里只留一条连接，
+ * 引用计数归零才真的 close。
+ */
+let miniMaxStream: EventSource | null = null;
+let miniMaxStreamRefs = 0;
+
+/**
+ * 订阅宿主的 PCM 流。
+ *
+ * **挂在插件级（`apply`）而不是整机视图里**：声音该在用户停在任何页签时都响 ——
+ * 只在整机页签订阅的话，切到别的页签就全哑了，而那正是「功能只在开着某个页签时
+ * 有效」的典型毛病。
+ *
+ * `EventSource` 不存在（无头 / 旧浏览器）时只记一条，不抛 —— 设置页那一行靠
+ * 轮询照常工作。
+ *
+ * @returns 退订函数。`ctx.effect` 会带它一起释放。
+ */
+function startMiniMaxStream(): () => void {
+  miniMaxStreamRefs += 1;
+  if (miniMaxStream !== null) {
+    // 已经连上了：这次只是旁观，别开第二条。
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      miniMaxStreamRefs -= 1;
+      if (miniMaxStreamRefs <= 0 && miniMaxStream !== null) {
+        miniMaxStream.close();
+        miniMaxStream = null;
+        markMinimax("minimaxSse", "closed");
+      }
+    };
+  }
+  if (typeof EventSource !== "function") {
+    markMinimax("minimaxSse", "unavailable");
+    return () => {
+      miniMaxStreamRefs = Math.max(0, miniMaxStreamRefs - 1);
+    };
+  }
+  let source: EventSource;
+  try {
+    source = new EventSource(MINIMAX_EVENTS_URL);
+  } catch (error) {
+    markMinimax("minimaxSse", `construct failed: ${String((error as Error)?.message ?? error)}`);
+    return () => {
+      miniMaxStreamRefs = Math.max(0, miniMaxStreamRefs - 1);
+    };
+  }
+  miniMaxStream = source;
+  markMinimax("minimaxSse", "connecting");
+  source.onopen = () => {
+    markMinimax("minimaxSse", "open");
+    // 连上就顺手对一次账：SSE 的 state 帧不保证到达，GET 是保底的事实来源。
+    void refreshMiniMax();
+  };
+  source.onerror = () => {
+    // EventSource 会自己重连，这里只记录状态（别手动 close —— 那才是真的断了）。
+    markMinimax("minimaxSse", "error");
+  };
+  source.onmessage = (event: MessageEvent) => {
+    // `onmessage` 每次就是**一整帧**：SSE 按空行分帧，多行 `data:` 已被浏览器
+    // 用 \n 拼好。所以这里不需要缓冲区、也不需要自己切块 —— 逐帧解析即可。
+    const frame = parseSseData(String(event.data ?? ""));
+    if (frame === null) {
+      markMinimax("minimaxBadFrames", ((globalThis.__DSH_HERTA__?.minimaxBadFrames as number) ?? 0) + 1);
+      return;
+    }
+    dispatchMiniMaxFrame(frame);
+  };
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    miniMaxStreamRefs -= 1;
+    if (miniMaxStreamRefs <= 0) {
+      source.close();
+      if (miniMaxStream === source) miniMaxStream = null;
+      markMinimax("minimaxSse", "closed");
+    }
   };
 }
 
@@ -633,7 +1341,6 @@ function HertaFullView(props: {
   ) => { legacy?: { nodes?: readonly unknown[]; partial?: unknown } } | undefined;
 }): unknown {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-
   const chat =
     typeof props.useHertaChat === "function"
       ? (props.useHertaChat((s) => s) as
@@ -732,6 +1439,19 @@ function HertaFullView(props: {
         // 「还没有实现」分支）。也就是她的设置面板能点、点了不报错、值却永远不变 ——
         // 典型假绿。现在统一读写 `ctx.configForms.get("herta")`，
         // 与 DSH 设置页里的「黑塔」一页是同一份值、同一条写入路径。
+        //
+        // ## 为什么她的设置页删了，这里的分支还留着
+        //
+        // 删掉 `Herta-src` 那套 `components/Settings/*` 之后，`getDreamConfig` /
+        // `getCloseToTray` / `getAutoUpdate` / `getBackendConfig` / `getModelConfig`
+        // / `getInteractionLanguage` / `getRealtimeVoice` / `getVoiceEngine` 与
+        // 各自的 setter **在渲染层里已经没有调用方**了。它们留在这里有两个理由：
+        //   · `HertaBridge` 契约把这些成员声明为**必填**（`bridge-types.ts:617-672`），
+        //     少一个就是类型错，而它是上游文件 —— 我们不改它的形状；
+        //   · 这些正是「暂未接线」那组字段的接线点：将来把消费方接回来时，
+        //     落地处就是这些分支，不是别处。
+        // 字段表里对应项的 `wired: false` + `note` 记的才是事实，别把「有分支」
+        // 误读成「有人调」。
         case "getLocale": {
           // bridge 的 `getLocale` 要一个真语言（`"zh" | "en"`），而设置里的
           // `locale` 允许空串 = 跟随系统。空串在这里按系统语言解析。
@@ -760,8 +1480,21 @@ function HertaFullView(props: {
           if (typeof next === "boolean") void writeMachineField("dreamEnabled", next);
           return reply(msg.id, undefined);
         }
-        case "getDeepSeekKeyStatus":
-          return reply(msg.id, { set: true, hint: "dsh", encrypted: true });
+        case "getDeepSeekKeyStatus": {
+          // **真值，不是常量。** 上一版这里硬返回 `{set:true}`：她的界面会显示
+          // 「密钥已设置」，而 DSH 到底有没有那把钥匙谁也不知道。现在读的是
+          // DSH 自己的凭据缝 —— ref 与官方模型页用的是同一个
+          // （`dsh-llm-deepseek-api-key` 的 `apiKeyEnv` 默认 `DEEPSEEK_API_KEY`）。
+          // 拿不到凭据服务时如实报未设置，而不是猜「已设置」。
+          void credentialStatus("DEEPSEEK_API_KEY").then((status) => {
+            reply(msg.id, {
+              set: status?.configured === true,
+              hint: status === undefined ? null : "DSH 的模型配置",
+              encrypted: true,
+            });
+          });
+          return;
+        }
         case "listSessions":
           // 整机视图目前只服务「当前这一个 DSH 会话」，所以她自己的会话列表是空的。
           return reply(msg.id, []);
@@ -814,15 +1547,63 @@ function HertaFullView(props: {
           void refreshVoiceModel().then(() => push("voiceModel", voiceModelState));
           return reply(msg.id, undefined);
         }
+        case "getVoicePrefs": {
+          // 静音与音量原来住在渲染层 localStorage（`herta.voice.muted` /
+          // `herta.voice.volume`），DSH 侧没有任何通道能读写它们。现在它们是
+          // 设置字段表的两个真字段，经这里下发；整机那边由
+          // `voice-prefs.ts` 的 `hydrateVoicePrefs` 接住。
+          // bridge 契约用 0–1（与 HTMLAudioElement / WebAudio 同一单位），
+          // 设置字段用 0–100 —— 换算只在这一处。
+          const volume = Number(machineField("voiceVolume"));
+          return reply(msg.id, {
+            muted: machineField("voiceMuted") === true,
+            volume: Number.isFinite(volume) ? Math.min(1, Math.max(0, volume / 100)) : 1,
+          });
+        }
+        case "setVoiceMuted": {
+          const next = (msg.params as { muted?: unknown } | undefined)?.muted;
+          if (typeof next === "boolean") void writeMachineField("voiceMuted", next);
+          return reply(msg.id, undefined);
+        }
+        case "setVoiceVolume": {
+          const next = (msg.params as { volume?: unknown } | undefined)?.volume;
+          if (typeof next === "number" && Number.isFinite(next)) {
+            const percent = Math.round(Math.min(1, Math.max(0, next)) * 100);
+            void writeMachineField("voiceVolume", percent);
+          }
+          return reply(msg.id, undefined);
+        }
         case "prepareMiniMaxVoice":
           return reply(msg.id, { phase: "absent" });
         case "onMiniMaxVoice":
           return reply(msg.id, undefined);
-        case "clearMiniMaxKey":
-          return reply(msg.id, { ok: true, status: emptyKeyStatus() });
-        case "setMiniMaxKey":
-          // 密钥归 DSH 自己管（credentials / 环境变量），如实拒绝而不是假装存下。
-          return reply(msg.id, { ok: false, reason: "rejected" });
+        case "clearMiniMaxKey": {
+          // 真删。上一版固定回 `{ok:true}` 而不真删 —— 界面显示「已清除」，
+          // 磁盘上的密钥还在，是那种最坏的假绿。
+          void clearCredential("MINIMAX_API_KEY").then((failure) => {
+            reply(msg.id, {
+              ok: failure === null,
+              status: { set: false, hint: failure, encrypted: true },
+            });
+          });
+          return;
+        }
+        case "setMiniMaxKey": {
+          // 真存。密钥进 DSH 的凭据存储，**不进** profile 的明文配置。
+          const value = (msg.params as { key?: unknown } | undefined)?.key;
+          if (typeof value !== "string" || value.trim().length === 0) {
+            return reply(msg.id, { ok: false, reason: "empty" });
+          }
+          void saveCredential("MINIMAX_API_KEY", value.trim()).then((failure) => {
+            reply(
+              msg.id,
+              failure === null
+                ? { ok: true, status: { set: true, hint: "DSH 凭据存储", encrypted: true } }
+                : { ok: false, reason: failure },
+            );
+          });
+          return;
+        }
         case "cancelVoiceModelDownload":
           // 以前这里是个空实现 —— 点了取消什么都没发生。
           void postVoiceModel("cancel").then(() => reply(msg.id, undefined));
@@ -848,7 +1629,14 @@ function HertaFullView(props: {
   }, []);
 
   return createElement("iframe", {
-    ref: frameRef,
+    // 回调 ref 而不是 `ref={frameRef}`：挂载/卸载的那一刻就把这份 iframe
+    // 登记成 MiniMax PCM 的语音出口（卸载时自动退回父窗口那条路）。
+    // 用 `useEffect` 做不到这一点 —— 它读到的 `frameRef.current` 在首次渲染时
+    // 还是 null。
+    ref: (node: HTMLIFrameElement | null) => {
+      frameRef.current = node;
+      registerVoiceSink(node);
+    },
     "data-dsh-herta-view": "full",
     src: "/herta-ui/",
     title: "黑塔 · 整机",
@@ -877,18 +1665,57 @@ function HertaFullView(props: {
 // 写入直接 `form.set(field, value)`（它自己带 revision 栅栏、串行化、失败重读）。
 // 乐观更新是没必要的 —— 宿主接受后镜像会自己推进一帧。
 
-/** 分组。字段名来自宿主的字段表，这里只负责分组与文案。 */
-const SETTINGS_GROUPS = [
-  { title: "界面", fields: ["locale", "interactionLanguage", "theme"] },
-  { title: "窗口与更新", fields: ["closeToTray", "autoUpdate", "deviceScene"] },
-  { title: "语音", fields: ["voiceEngine", "realtimeVoice"] },
+// 分组表（`SETTINGS_GROUPS`）从宿主那份纯数据模块 import —— 见文件顶部那条 import
+// 的注释。2026-09-28 之前它是这里的一个局部常量，于是 `voiceEngine` /
+// `realtimeVoice` 被标成 `wired: true` 之后从「暂未接线」组掉出去、又没人加进这里，
+// 两个字段在页面上**一行都不渲染**，而且没有任何测试能发现（现在有了）。
+
+/**
+ * 「暂未接线」那一组的说明。逐行的原因写在字段表的 `note` 里 ——
+ * 那是「谁该读它、现在缺什么」的备忘，不是免责声明。
+ */
+const UNWIRED_HINT =
+  "下面这些项在 DSH 里改得动、写得进，但**整机当前没有任何代码读它们**：它们原本只被她自己的设置页读写，或者只被「写回她自己的 settings.json」这条已删除的链路消费。逐行的原因见每一项下面那行小字。";
+
+/**
+ * 要进 DSH 凭据存储的三个密钥。
+ *
+ * 值本身**不进** Config —— profile 的 `cordis.patch.yml` 是明文 YAML，
+ * 密钥写进去等于公开。它们走 DSH 的凭据缝（`ctx.remote.credentials`），
+ * 落在 `$DSH_HOME/.credentials.yaml`（0600，file 层，可写）。
+ *
+ * `ref` 是 POSIX 环境变量名：DSH 的凭据按这个名字索引，宿主代码也按它取值
+ * （`src/host/mimo-tts.js` 读的就是 `MIMO_API_KEY`）。
+ */
+const CREDENTIALS = [
   {
-    title: "工作区",
-    // 整机的工作区偏好是**每个工作区各一份文件**，所以这一组先要一个路径。
-    hint: "整机在每个工作区各存一份设置。填上工作区根目录后，下面这几项会写进 <工作区>\\.herta\\settings.json；留空 = 不同步。",
-    fields: ["workspace", "dreamEnabled", "backendThinking", "backendContract", "modelsActor", "modelsBackend"],
+    ref: "MIMO_API_KEY",
+    label: "MiMo 密钥",
+    hint: "MiMo 语音合成用。宿主侧 mimo-tts.js 会读它 —— 但那个合成器目前还没有调用点，所以存下来暂时不会发声（见「语音引擎」那一行）。",
+    placeholder: "MiMo 控制台里的密钥",
+  },
+  {
+    ref: "MINIMAX_API_KEY",
+    label: "MiniMax 密钥",
+    hint: "MiniMax 云端语音用。宿主侧会读它去认领你已有的克隆（只认领、不克隆），没填就用不了云端引擎。",
+    placeholder: "sk-api-…",
+  },
+  {
+    ref: "MINIMAX_PLAN_API_KEY",
+    label: "MiniMax 套餐密钥",
+    hint: "MiniMax Token 套餐（`sk-cp-…`）。同样被宿主读取；两把都填时合成优先用套餐密钥。",
+    placeholder: "sk-cp-…",
   },
 ];
+
+/**
+ * 「打开网盘」的目标。
+ *
+ * 抄自 `Herta-src/packages/gui/src/shared/links.ts` 的 `NETDISK_URL` ——
+ * 客户端 bundle 不能 import 上游源码，所以这里是**第三份**副本（另两份是
+ * 那个常量本身与官网下载页）。它几乎不会变；真变了改三处。
+ */
+const NETDISK_URL = "https://pan.baidu.com/s/1k-47zy6TTDWl0OaT2WCFUg?pwd=y195";
 
 /** 枚举值的中文文案。键必须与字段表里的取值域一致（不一致就原样显示英文值）。 */
 const ENUM_LABELS = {
@@ -902,23 +1729,60 @@ const ENUM_LABELS = {
   modelsBackend: { "deepseek-v4-pro": "V4 Pro", "deepseek-flash": "V4.1 Flash" },
 };
 
-/** 每项的说明。写清「改完什么时候生效」——她要重启的那几项必须说出来。 */
+/**
+ * 每项的说明。
+ *
+ * 「暂未接线」那几项这里只写**它是什么**，为什么不生效写在字段表的 `note` 里
+ * （那一行由页面自动渲染，来源就是字段表本身，不在这儿抄第二遍）。
+ * 特别不能写「她那边重启后生效」——那些项现在连一次生效的机会都没有。
+ */
 const FIELD_HINTS = {
   locale: "整机界面自己的语言。「跟随系统」= 不写这个键，按操作系统语言解析。",
-  interactionLanguage: "她被提示用哪种语言说话。只影响新会话。",
+  interactionLanguage: "她被提示用哪种语言说话。",
   theme: "整机界面的明暗。",
-  closeToTray: "点窗口关闭时收进托盘还是退出。立刻生效。",
-  autoUpdate: "自动检查更新。关掉不影响手动检查。",
+  closeToTray: "点窗口关闭时收进托盘还是退出。",
+  autoUpdate: "自动检查更新。",
   deviceScene: "差分协处理器页上的 3D 设备卡。",
-  voiceEngine: "她说话用哪个引擎。",
-  realtimeVoice: "实时语音总开关。",
-  workspace: "整机的工作区根目录（绝对路径）。留空 = 不动任何工作区文件。",
-  dreamEnabled: "她空闲时自己写废案。她那边重启后生效。",
-  backendThinking: "板砖的推理档位。她那边重启后生效。",
-  backendContract: "板砖的工具契约。她那边重启后生效。",
-  modelsActor: "驱动黑塔说话的模型。她那边重启后生效。",
-  modelsBackend: "驱动板砖的模型。她那边重启后生效。",
+  voiceEngine: "她说话用哪个引擎。改完立刻生效 —— 宿主每一轮都现读这个值。",
+  realtimeVoice: "「自动念回复」的总开关。关掉就不再自动把回复送去合成（不再花钱）；herta_say 与「试听」不受它管。",
+  voiceMuted: "关掉她所有的语音播放。立刻生效。",
+  voiceVolume: "语音播放的音量（0–100）。立刻生效。",
+  workspace: "整机的工作区根目录（绝对路径）。",
+  dreamEnabled: "她空闲时自己写废案。",
+  backendThinking: "板砖的推理档位。",
+  backendContract: "板砖的工具契约。",
+  modelsActor: "驱动黑塔说话的模型。",
+  modelsBackend: "驱动板砖的模型。",
 };
+
+/**
+ * 逐档的**现状**（是行为，不是偏好）—— 引擎行按当前选中值显示那一句。
+ *
+ * 三档里只有两档会真的出声：`local` 直连本地模型、`minimax` 云端优先（失败回落
+ * 本地）。`mimo` 的合成器**还没有调用点**，选它不会发声 —— 这一句必须写出来，
+ * 而不是把选项藏起来（用户决策：保留三档 + 逐档标注）。
+ *
+ * 本地那一档的代价写在第二句里，数字是 2026-09-28 在本机直接跑 worker 量的：
+ *   · **冷启动**（加载 addon + 85 MB 模型）2.7–4.4 s，其中模型加载 2.6–3.7 s；
+ *   · 加载完之后**每句只付推理**，约音频时长的 0.28 倍（3.5 s 的音频 ~1.0 s，
+ *     短句 ~0.25 s）—— 于是她念得比播放还快。
+ * 所以本地合成现在走**常驻进程**（`src/host/tts-runtime.js`）：切到这一档时就顺手
+ * 预热，空闲 10 分钟自动退掉还内存；第一次仍可能要等一次加载。
+ */
+const ENGINE_NOTES: Record<string, string> = {
+  local:
+    "离线合成：不花钱、不需要网络。合成进程会常驻（切到这一档就先预热），热起来后每句只付推理；首次、或空闲回收之后，要重新加载模型约 3 秒。",
+  minimax:
+    "云端合成：边写边念。云端不可用（没密钥 / 没认领到克隆 / 被拒绝）时自动回落本地模型，回落原因写在下面「MiniMax 语音」那一行。",
+  mimo: "合成器尚未接线（宿主侧 mimo-tts.js 还没有调用点），选它不会发声。",
+};
+
+/** 引擎值 → 中文档位名（缺了就原样显示，与 `EnumControl` 同口径）。 */
+function engineLabel(engine: unknown): string {
+  const value = typeof engine === "string" ? engine : "";
+  const labels = (ENUM_LABELS as Record<string, Record<string, string>>).voiceEngine ?? {};
+  return labels[value] ?? value;
+}
 
 /** 选择器要用的空数组常量：引用必须稳定，否则 useSyncExternalStore 会自激。 */
 const EMPTY_WORKSPACES = Object.freeze([]);
@@ -964,6 +1828,35 @@ const SUGGEST_STYLE = {
   cursor: "pointer",
   textAlign: "left",
 };
+/** 「暂未接线」的逐行小字。刻意用斜体，好和上面那句「它是什么」分开读。 */
+const UNWIRED_NOTE_STYLE = {
+  marginTop: 4,
+  fontSize: 12,
+  color: "var(--dsw-alias-label-secondary)",
+  lineHeight: "17px",
+  fontStyle: "italic",
+};
+/** 密钥状态的徽标。 */
+const BADGE_STYLE = {
+  marginLeft: 8,
+  padding: "1px 6px",
+  fontSize: 11,
+  fontWeight: 400,
+  color: "var(--dsw-alias-label-secondary)",
+  background: "var(--dsw-alias-bg-layer-2)",
+  border: "1px solid var(--dsw-alias-border-l1)",
+  borderRadius: 4,
+};
+/** 次要按钮：密钥的存/清、模型动作、打开网盘。 */
+const ACTION_BUTTON_STYLE = {
+  padding: "4px 10px",
+  fontSize: 12,
+  color: "var(--dsw-alias-label-primary)",
+  background: "var(--dsw-alias-bg-layer-2)",
+  border: "1px solid var(--dsw-alias-border-l2)",
+  borderRadius: 6,
+  cursor: "pointer",
+};
 
 /**
  * 运行时从模块加载器取一个种子模块。
@@ -1000,14 +1893,8 @@ function loadSeedModule(id: string): any {
 function createSettingsSection(ui: unknown) {
   const { Switch, SegmentedControl } = ui as { Switch: any; SegmentedControl: any };
 
-  /** 一行：左标签 + 说明，右控件（+ 覆盖时的「跟随整机」复位）。 */
-  function Row(props: {
-    label: string;
-    hint?: string;
-    control: unknown;
-    overridden?: boolean;
-    onReset?: () => void;
-  }): unknown {
+  /** 一行：左标签 + 说明（+ 可选的「暂未接线」小字），右控件。 */
+  function Row(props: { label: string; hint?: string; note?: string; control: unknown }): unknown {
     return createElement(
       "div",
       { style: ROW_STYLE },
@@ -1016,13 +1903,8 @@ function createSettingsSection(ui: unknown) {
         { style: { flex: "1 1 auto", minWidth: 0 } },
         createElement("div", { style: LABEL_STYLE }, props.label),
         props.hint === undefined ? null : createElement("div", { style: HINT_STYLE }, props.hint),
-        props.overridden !== true || props.onReset === undefined
-          ? null
-          : createElement(
-              "button",
-              { type: "button", style: SUGGEST_STYLE, onClick: props.onReset },
-              "↺ 跟随整机",
-            ),
+        // 「暂未接线」的逐行标注。文案来自字段表的 `note`，页面只负责摆位置。
+        props.note === undefined ? null : createElement("div", { style: UNWIRED_NOTE_STYLE }, props.note),
       ),
       createElement("div", { style: { flex: "0 0 auto", paddingTop: 1 } }, props.control),
     );
@@ -1044,6 +1926,588 @@ function createSettingsSection(ui: unknown) {
       disabled: props.disabled === true,
       onChange: props.onChange,
     });
+  }
+
+  /** 数值项（目前只有音量）：滑杆 + 读数。范围与步长来自字段表。 */
+  function NumberControl(props: {
+    field: string;
+    value: unknown;
+    disabled?: boolean;
+    onChange: (next: number) => void;
+  }): unknown {
+    const spec = FIELDS[props.field];
+    const current = typeof props.value === "number" ? props.value : (spec.def as number);
+    return createElement(
+      "div",
+      { style: { display: "flex", alignItems: "center", gap: 10 } },
+      createElement("input", {
+        type: "range",
+        min: spec.min,
+        max: spec.max,
+        step: spec.step,
+        value: current,
+        disabled: props.disabled === true,
+        "aria-label": spec.label,
+        style: { width: 180 },
+        onChange: (event: { target: { value: string } }) => props.onChange(Number(event.target.value)),
+      }),
+      createElement(
+        "span",
+        {
+          style: {
+            fontSize: 12,
+            color: "var(--dsw-alias-label-secondary)",
+            minWidth: 30,
+            textAlign: "right",
+            fontVariantNumeric: "tabular-nums",
+          },
+        },
+        String(current),
+      ),
+    );
+  }
+
+  /**
+   * 一行密钥：状态徽标 + 密码框 + 存/清。
+   *
+   * 值的去处是 DSH 的凭据缝（`$DSH_HOME/.credentials.yaml`），**不是** Config ——
+   * 理由见 `CredentialsRemote` 的注释。所以这一行不读写 `machineForm`，
+   * 也不参与 `normalizeSettings`。
+   */
+  function CredentialRow(props: {
+    spec: { ref: string; label: string; hint: string; placeholder: string };
+  }): unknown {
+    type Status =
+      | { kind: "loading" }
+      | { kind: "unavailable" }
+      | { kind: "ok"; configured: boolean; writable: boolean };
+    const [status, setStatus] = useState<Status>({ kind: "loading" });
+    const [draft, setDraft] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const reprobe = useCallback((): void => {
+      void credentialStatus(props.spec.ref).then((next) => {
+        setStatus(next === undefined ? { kind: "unavailable" } : { kind: "ok", ...next });
+      });
+    }, [props.spec.ref]);
+
+    useEffect(() => {
+      // 挂载先查一次；凭据缝若是稍后才挂上来的（见 `installSettingsSection`），
+      // 那一次查询会白跑，所以再订阅一次「它到了」。
+      const unsubscribe = subscribeCredentials(reprobe);
+      reprobe();
+      return unsubscribe;
+    }, [reprobe]);
+
+    const save = (): void => {
+      const value = draft.trim();
+      if (value.length === 0 || busy) return;
+      setBusy(true);
+      setError(null);
+      void saveCredential(props.spec.ref, value).then((failure) => {
+        setBusy(false);
+        if (failure !== null) {
+          setError(failure);
+          return;
+        }
+        setDraft("");
+        reprobe();
+      });
+    };
+
+    const clear = (): void => {
+      if (busy) return;
+      setBusy(true);
+      setError(null);
+      void clearCredential(props.spec.ref).then((failure) => {
+        setBusy(false);
+        if (failure !== null) {
+          setError(failure);
+          return;
+        }
+        reprobe();
+      });
+    };
+
+    const badgeText =
+      status.kind === "loading"
+        ? "读取中…"
+        : status.kind === "unavailable"
+          ? "凭据服务不可用"
+          : status.configured
+            ? "已配置"
+            : "未配置";
+    const canWrite = status.kind === "ok" && status.writable && !busy;
+
+    return createElement(
+      "div",
+      { style: ROW_STYLE, key: props.spec.ref },
+      createElement(
+        "div",
+        { style: { flex: "1 1 auto", minWidth: 0 } },
+        createElement(
+          "div",
+          { style: LABEL_STYLE },
+          props.spec.label,
+          createElement("span", { style: BADGE_STYLE }, badgeText),
+        ),
+        createElement("div", { style: HINT_STYLE }, props.spec.hint),
+        createElement("div", { style: HINT_STYLE }, `存放位置：DSH 凭据存储（ref = ${props.spec.ref}）`),
+        error === null ? null : createElement("div", { style: { ...HINT_STYLE, color: "var(--dsw-alias-label-error, #c0392b)" } }, error),
+      ),
+      createElement(
+        "div",
+        { style: { flex: "0 0 auto", display: "grid", gap: 6, justifyItems: "end" } },
+        createElement("input", {
+          type: "password",
+          value: draft,
+          disabled: busy || status.kind === "unavailable",
+          spellCheck: false,
+          autoComplete: "off",
+          placeholder: status.kind === "ok" && status.configured ? "已存（填入即覆盖）" : props.spec.placeholder,
+          "aria-label": props.spec.label,
+          style: { ...INPUT_STYLE, width: 220 },
+          onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
+          onKeyDown: (event: { key: string }) => {
+            if (event.key === "Enter") save();
+          },
+        }),
+        createElement(
+          "div",
+          { style: { display: "flex", gap: 8 } },
+          createElement(
+            "button",
+            {
+              type: "button",
+              style: ACTION_BUTTON_STYLE,
+              disabled: draft.trim().length === 0 || !canWrite,
+              onClick: save,
+            },
+            busy ? "处理中…" : "保存",
+          ),
+          createElement(
+            "button",
+            {
+              type: "button",
+              style: ACTION_BUTTON_STYLE,
+              disabled: !canWrite || status.kind !== "ok" || !status.configured,
+              onClick: clear,
+            },
+            "清除",
+          ),
+        ),
+      ),
+    );
+  }
+
+  /**
+   * 本地语音模型的下载/删除。
+   *
+   * 这是**真动作**：宿主侧 `/herta-voice-model`（`src/host/voice-model-route.js`
+   * + `voice-model.js`）真的会去上游地址取归档、解到 `$DSH_HOME/tts/`。
+   * 状态与进度靠轮询（下载中才开定时器），复用 iframe 那侧同一套镜像。
+   */
+  function VoiceModelRow(): unknown {
+    const [state, setState] = useState<Record<string, unknown> | null>(voiceModelState);
+    const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+      const sub = (next: unknown): void => {
+        setState((next as Record<string, unknown> | null) ?? null);
+      };
+      voiceModelSubs.add(sub);
+      // 挂载就先问一次宿主，别让首屏停在「未知」。
+      void refreshVoiceModel().then(() => setState(voiceModelState));
+      return () => {
+        voiceModelSubs.delete(sub);
+      };
+    }, []);
+
+    const phase = typeof state?.phase === "string" ? state.phase : "absent";
+    const phaseText =
+      phase === "ready"
+        ? "已安装"
+        : phase === "downloading"
+          ? "下载中…"
+          : phase === "failed"
+            ? "上次失败"
+            : "未安装";
+    const received = typeof state?.receivedBytes === "number" ? (state.receivedBytes as number) : 0;
+    const total = typeof state?.totalBytes === "number" ? (state.totalBytes as number) : 0;
+    const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
+    const runtimeReady = (state?.runtime as { available?: boolean } | undefined)?.available === true;
+
+    const act = (action: string): void => {
+      if (busy) return;
+      setBusy(true);
+      void postVoiceModel(action).then(() => {
+        setBusy(false);
+        setState(voiceModelState);
+      });
+    };
+
+    return createElement(
+      "div",
+      { style: ROW_STYLE },
+      createElement(
+        "div",
+        { style: { flex: "1 1 auto", minWidth: 0 } },
+        createElement("div", { style: LABEL_STYLE }, "本地语音模型"),
+        createElement(
+          "div",
+          { style: HINT_STYLE },
+          `离线 TTS 的模型归档。状态：${phaseText}${phase === "downloading" ? `（${percent}%，${Math.round(received / 1048576)} / ${Math.round(total / 1048576)} MB）` : ""}`,
+        ),
+        createElement(
+          "div",
+          { style: HINT_STYLE },
+          runtimeReady
+            ? "运行时已就绪（宿主真的加载过 addon 并探测通过）。"
+            : "运行时**未就绪** —— 宿主探测 addon 没成功，所以现在合成不出声音。这不是按钮的问题，是运行时还没装好。",
+        ),
+      ),
+      createElement(
+        "div",
+        { style: { flex: "0 0 auto", display: "flex", gap: 8, paddingTop: 1 } },
+        createElement(
+          "button",
+          {
+            type: "button",
+            style: ACTION_BUTTON_STYLE,
+            disabled: busy || phase === "downloading" || phase === "ready",
+            onClick: () => act("download"),
+          },
+          "下载",
+        ),
+        createElement(
+          "button",
+          {
+            type: "button",
+            style: ACTION_BUTTON_STYLE,
+            disabled: busy || phase !== "downloading",
+            onClick: () => act("cancel"),
+          },
+          "取消",
+        ),
+        createElement(
+          "button",
+          {
+            type: "button",
+            style: ACTION_BUTTON_STYLE,
+            disabled: busy || phase === "absent" || phase === "downloading",
+            onClick: () => act("remove"),
+          },
+          "删除",
+        ),
+      ),
+    );
+  }
+
+  /**
+   * 「语音引擎」那一行 —— 分段控件 + 试听 + 逐档现状 + 本地就绪。
+   *
+   * ## 为什么不走通用的 `Row` + `fieldRow`
+   *
+   * 这一行要多三样**不是字段**的东西：
+   *   ① 逐档「现在到底会不会出声、要付什么代价」的一句说明（`ENGINE_NOTES`）；
+   *   ② 本地模型 / 运行时的**真探测**结果 —— 同一份 `/herta-voice-model` 镜像，
+   *      与「整机动作 › 本地语音模型」那行共用（不另开一次 HTTP）；
+   *   ③ 试听按钮与它的结果。
+   *
+   * 静音提示也挂在这里：试听走的是浏览器播放路径，而那条路有静音闸门
+   * （`machineField("voiceMuted")` 为真就 return）。不提示的话，按下去就是
+   * "没反应" —— 用户分不清"静音"和"坏了"，所以这里同时给一个一键取消静音。
+   */
+  function VoiceEngineRow(props: {
+    value: unknown;
+    disabled?: boolean;
+    muted: boolean;
+    setField: (field: string, value: unknown) => void;
+  }): unknown {
+    const [model, setModel] = useState<Record<string, unknown> | null>(voiceModelState);
+    const [mini, setMini] = useState<Record<string, unknown> | null>(miniMaxState);
+    const [busy, setBusy] = useState(false);
+    const [result, setResult] = useState<string | null>(null);
+
+    useEffect(() => {
+      const sub = (next: unknown): void => {
+        setModel((next as Record<string, unknown> | null) ?? null);
+      };
+      voiceModelSubs.add(sub);
+      // 挂载就先问一次宿主，别让首屏停在「未知」。
+      void refreshVoiceModel().then(() => setModel(voiceModelState));
+      return () => {
+        voiceModelSubs.delete(sub);
+      };
+    }, []);
+
+    // 常驻合成进程的状态来自宿主快照（与「MiniMax 语音」那一行是同一份，订阅按引用计数
+    // 共用一条 5 秒轮询，不会开出第二条定时器）。
+    useEffect(() => subscribeMiniMax(setMini), []);
+
+    const engine = typeof props.value === "string" ? props.value : String(FIELDS.voiceEngine.def);
+    const phase = typeof model?.phase === "string" ? model.phase : "absent";
+    const phaseText =
+      phase === "ready"
+        ? "已就绪（herta-best-e72）"
+        : phase === "downloading"
+          ? "下载中…"
+          : phase === "failed"
+            ? "上次安装失败"
+            : "未下载";
+    const runtimeReady = (model?.runtime as { available?: boolean } | undefined)?.available === true;
+    const workerState = (mini?.localWorker as { state?: unknown } | undefined)?.state;
+    const workerText =
+      workerState === "running"
+        ? "已预热"
+        : workerState === "starting"
+          ? "启动中…"
+          : "未启动（首次合成就地加载，约 3 秒）";
+
+    /**
+     * 换引擎。切到「本地模型」时顺手把常驻进程热起来 —— 那 ~3 秒的模型加载就落在
+     * 用户还在选的这几秒里，而不是落在他第一次真的想听的那一刻。
+     *
+     * `warm` 是 fire-and-forget：回执会经同一条快照通道回来，上面那行
+     * 「合成进程：」自己会从「未启动」变成「启动中…」再到「已预热」。
+     */
+    const chooseEngine = (next: string): void => {
+      props.setField("voiceEngine", next);
+      if (next === "local") void postMiniMaxAction("warm");
+    };
+
+    const preview = (): void => {
+      if (busy) return;
+      setBusy(true);
+      setResult(null);
+      // 复用 `POST /herta-minimax-state {action:"preview"}`：宿主拿固定台词走一遍
+      // **当前引擎**的合成，PCM 仍从那条 SSE 回来（与她的自动念回复同一条路），
+      // 所以这里不自己造第二条播放通道。
+      void postMiniMaxAction("preview").then((next) => {
+        setBusy(false);
+        const out = (next?.preview ?? null) as { ok?: unknown; engine?: unknown; note?: unknown } | null;
+        if (out === null) {
+          setResult("试听没有回执：宿主的语音层可能没挂载（看宿主日志）。");
+          return;
+        }
+        if (out.ok === true) {
+          setResult(`试听已经推给界面（用 ${engineLabel(out.engine ?? engine)}）。`);
+          return;
+        }
+        setResult(
+          `试听没有出声：${typeof out.note === "string" && out.note !== "" ? out.note : "原因未知（看宿主日志）"}`,
+        );
+      });
+    };
+
+    return createElement(
+      "div",
+      { style: ROW_STYLE },
+      createElement(
+        "div",
+        { style: { flex: "1 1 auto", minWidth: 0 } },
+        createElement("div", { style: LABEL_STYLE }, FIELDS.voiceEngine.label),
+        createElement("div", { style: HINT_STYLE }, FIELD_HINTS.voiceEngine),
+        createElement("div", { style: HINT_STYLE }, ENGINE_NOTES[engine] ?? ""),
+        // 本地就绪**常显**：minimax 那档也会在云端不可用时回落到本地模型，
+        // 所以"本地模型装没装、运行时探测过没有、合成进程热没热"对两个档位都是有用的事实。
+        createElement(
+          "div",
+          { style: HINT_STYLE },
+          `本地模型：${phaseText}　·　运行时：${runtimeReady ? "可用" : "缺失或未探测通过"}`
+            + `　·　合成进程：${workerText}`
+            + (phase === "absent" || phase === "failed" ? "（在「整机动作 › 本地语音模型」里下载）" : ""),
+        ),
+        props.muted
+          ? createElement(
+              "div",
+              { style: { ...HINT_STYLE, color: "var(--dsw-alias-label-warning, #b7791f)" } },
+              "当前是静音，试听不会出声。",
+            )
+          : null,
+        result === null ? null : createElement("div", { style: HINT_STYLE }, result),
+      ),
+      createElement(
+        "div",
+        { style: { flex: "0 0 auto", display: "grid", gap: 6, justifyItems: "end" } },
+        createElement(EnumControl, {
+          field: "voiceEngine",
+          value: props.value,
+          disabled: props.disabled === true,
+          onChange: chooseEngine,
+        }),
+        createElement(
+          "button",
+          {
+            type: "button",
+            style: ACTION_BUTTON_STYLE,
+            disabled: busy || props.disabled === true,
+            onClick: preview,
+          },
+          busy ? "试听中…" : "试听",
+        ),
+        props.muted
+          ? createElement(
+              "button",
+              {
+                type: "button",
+                style: ACTION_BUTTON_STYLE,
+                disabled: props.disabled === true,
+                onClick: () => props.setField("voiceMuted", false),
+              },
+              "取消静音",
+            )
+          : null,
+      ),
+    );
+  }
+
+  /**
+   * MiniMax 语音的**认领状态 + 重新认领**。
+   *
+   * 「设置页黑塔 → 语音那一栏」的这一行，与上面那个「本地语音模型」是两条不同的
+   * 链路：那个是离线模型归档，这个是云端克隆音色的认领状态。值的来源是
+   * `/herta-minimax-state`，与 SSE 的 `state` 帧是**同一份**宿主快照。
+   *
+   * ## 为什么一行里要显示这么多东西
+   *
+   * 「她怎么没声了」有六种完全不同的原因（没密钥 / 认领失败 / 额度用完 / 在冷却 /
+   * 回落到本地 / 到了每轮上限），而它们在界面上原来长得一模一样 —— 全是「没声音」。
+   * 把 `engine`、`engineNote`、`voice.phase`、`lastError`、`retryAt`、
+   * `maxTurnChars`、`clients` 一起摆出来，就是为了让每一种原因都能被认出来，
+   * 而不是让人去翻日志。
+   */
+  function MiniMaxVoiceRow(): unknown {
+    const [state, setState] = useState<Record<string, unknown> | null>(miniMaxState);
+    const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+      // 挂上就拉一次 + 开 5 秒轮询；卸载即停（没有订阅者就没有定时器）。
+      return subscribeMiniMax(setState);
+    }, []);
+
+    const engine = typeof state?.engine === "string" ? state.engine : "未知";
+    const engineNote = typeof state?.engineNote === "string" && state.engineNote !== "" ? state.engineNote : null;
+    const keyKnown = state?.keyKnown === true;
+    const voice = (state?.voice ?? {}) as {
+      phase?: unknown;
+      voiceId?: unknown;
+      host?: unknown;
+      clonedAt?: unknown;
+      lastError?: unknown;
+      retryAt?: unknown;
+    };
+    const synth = (state?.synth ?? {}) as { refusal?: unknown; lastFailure?: unknown; inFlight?: unknown };
+    const pipeline = (state?.pipeline ?? {}) as { cappedUtterances?: unknown; utterances?: unknown };
+    const maxTurnChars = typeof state?.maxTurnChars === "number" ? state.maxTurnChars : null;
+    const clients = typeof state?.clients === "number" ? state.clients : null;
+    const phase = typeof voice.phase === "string" ? voice.phase : "absent";
+
+    const phaseText =
+      phase === "ready"
+        ? `已认领：${String(voice.voiceId ?? "（没有 id）")} @ ${String(voice.host ?? "未知端点")}`
+        : phase === "preparing"
+          ? "认领中…"
+          : phase === "failed"
+            ? `认领失败：${miniMaxErrorText(voice.lastError)}`
+            : "还没有认领（或密钥还没填）";
+    const retryText = phase === "failed" ? miniMaxRetryText(voice.retryAt) : null;
+
+    const adopt = (): void => {
+      if (busy) return;
+      setBusy(true);
+      // 按钮期间禁用：`adopt` 在宿主那边是「清记录 + 重新认领一次」，会打网络；
+      // 连点就是连着重认领，白花钱也白等。
+      void postMiniMaxAction("adopt").then((next) => {
+        setBusy(false);
+        setState(next);
+      });
+    };
+
+    return createElement(
+      "div",
+      { style: ROW_STYLE },
+      createElement(
+        "div",
+        { style: { flex: "1 1 auto", minWidth: 0 } },
+        createElement("div", { style: LABEL_STYLE }, "MiniMax 语音"),
+        createElement(
+          "div",
+          { style: HINT_STYLE },
+          `当前引擎：${engineLabel(engine)}` + `　·　密钥：${keyKnown ? "已填" : "未填"}`,
+        ),
+        // 「已回落」要显式说 —— 否则用户只会觉得"她的声音变了"，说不出为什么。
+        engineNote === null
+          ? null
+          : createElement(
+              "div",
+              { style: { ...HINT_STYLE, color: "var(--dsw-alias-label-warning, #b7791f)" } },
+              `已回落：${engineNote}`,
+            ),
+        createElement("div", { style: HINT_STYLE }, phaseText),
+        retryText === null ? null : createElement("div", { style: HINT_STYLE }, `下次可重试：${retryText}`),
+        synth.refusal === null || synth.refusal === undefined
+          ? null
+          : createElement("div", { style: HINT_STYLE }, `MiniMax 拒绝：${miniMaxErrorText(synth.refusal)}`),
+        synth.lastFailure === null || synth.lastFailure === undefined
+          ? null
+          : createElement(
+              "div",
+              { style: HINT_STYLE },
+              `上次合成失败：${miniMaxErrorText(synth.lastFailure)}（在飞 ${String(synth.inFlight ?? 0)}）`,
+            ),
+        createElement(
+          "div",
+          { style: HINT_STYLE },
+          `每轮上限：${maxTurnChars === null ? "未知" : `${maxTurnChars} 字`}` +
+            `　·　已到上限的轮数：${String(pipeline.cappedUtterances ?? 0)}` +
+            `　·　SSE 客户端：${clients === null ? "未知" : clients}`,
+        ),
+      ),
+      createElement(
+        "div",
+        { style: { flex: "0 0 auto", paddingTop: 1 } },
+        createElement(
+          "button",
+          { type: "button", style: ACTION_BUTTON_STYLE, disabled: busy, onClick: adopt },
+          busy ? "认领中…" : "重新认领",
+        ),
+      ),
+    );
+  }
+
+  /** 「打开网盘」—— 一个真链接，不是占位。 */
+  function NetdiskRow(): unknown {
+    return createElement(
+      "div",
+      { style: ROW_STYLE },
+      createElement(
+        "div",
+        { style: { flex: "1 1 auto", minWidth: 0 } },
+        createElement("div", { style: LABEL_STYLE }, "安装包网盘"),
+        createElement(
+          "div",
+          { style: HINT_STYLE },
+          "整机安装包的网盘镜像（网络到不了 GitHub 时用）。在新标签页里打开。",
+        ),
+      ),
+      createElement(
+        "div",
+        { style: { flex: "0 0 auto", paddingTop: 1 } },
+        createElement(
+          "button",
+          {
+            type: "button",
+            style: ACTION_BUTTON_STYLE,
+            onClick: () => {
+              window.open(NETDISK_URL, "_blank", "noopener,noreferrer");
+            },
+          },
+          "打开网盘",
+        ),
+      ),
+    );
   }
 
   /**
@@ -1094,7 +2558,7 @@ function createSettingsSection(ui: unknown) {
         value: draft,
         disabled: props.disabled === true,
         spellCheck: false,
-        placeholder: "例如 E:\\deepseek工作区",
+        placeholder: "例如 D:\\项目\\我的仓库",
         style: INPUT_STYLE,
         onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
         onKeyDown: (event: { key: string }) => {
@@ -1120,7 +2584,6 @@ function createSettingsSection(ui: unknown) {
   return function HertaSettingsSection(props: {
     useHertaMachine?: (selector: (snapshot: unknown) => unknown) => unknown;
     setHertaField?: (field: string, value: unknown) => void;
-    clearHertaField?: (field: string) => void;
     useWorkspaces?: unknown;
   }): unknown {
     const snapshot = (typeof props.useHertaMachine === "function"
@@ -1131,16 +2594,16 @@ function createSettingsSection(ui: unknown) {
     const header = createElement(
       "div",
       null,
-      createElement("div", { style: { fontSize: 15, fontWeight: 600, marginBottom: 6 } }, "黑塔 · 整机"),
+      createElement("div", { style: { fontSize: 15, fontWeight: 600, marginBottom: 6 } }, "黑塔"),
       createElement(
         "div",
         { style: NOTE_STYLE },
-        "这一页改的是她自己的整机设置：写入落进 DSH 的 profile 配置，再同步到整机读的那几份 settings.json。",
+        "黑塔的设置**只有这一处**。她的整机界面里那套设置面板已经删除，所以这里改的值就是她读到的值。",
       ),
       createElement(
         "div",
         { style: NOTE_STYLE },
-        "只写你在这一页改过的项 —— 没动过的项在整机的文件里原样保留，她在自己界面里改的东西不会被覆盖。",
+        "写入落进 DSH 的 profile 配置（`cordis.patch.yml` 的 `herta` 条目）。密钥是唯一的例外：它们进 DSH 的凭据存储，不进这份明文配置。",
       ),
     );
 
@@ -1151,80 +2614,147 @@ function createSettingsSection(ui: unknown) {
 
     const disabled = snapshot.writable === false;
     const setField = (field: string, value: unknown) => props.setHertaField?.(field, value);
-    // 「覆盖过没有」看的是 `user` 层有没有这个键 —— 不是比较值：
-    // 显式设成默认值与从没设过在值上一样、在这里的语义完全不同
-    // （前者写回整机，后者不碰她的文件）。
-    const userLayer = (snapshot as { user?: unknown }).user;
-    const isOverridden = (field: string) =>
-      userLayer !== null && typeof userLayer === "object" && Object.prototype.hasOwnProperty.call(userLayer, field);
 
-    const groups = SETTINGS_GROUPS.map((group) => {
-      const rows = group.fields
-        .filter((field) => field in FIELDS)
-        .map((field) => {
-          const spec = (FIELDS as Record<string, any>)[field];
-          const value = (values as Record<string, unknown>)[field];
-          let control: unknown;
-          if (spec.kind === "boolean") {
-            control = createElement(Switch, {
-              checked: value === true,
-              label: spec.label,
-              disabled,
-              onChange: (next: boolean) => setField(field, next),
-            });
-          } else if (spec.kind === "enum") {
-            control = createElement(EnumControl, {
-              field,
-              value,
-              disabled,
-              onChange: (next: string) => setField(field, next),
-            });
-          } else {
-            control = createElement(WorkspaceInput, {
-              value: typeof value === "string" ? value : "",
-              disabled,
-              onCommit: (next: string) => setField(field, next),
-              useWorkspaces: props.useWorkspaces,
-            });
-          }
-          return createElement(Row, {
-            key: field,
-            label: spec.label,
-            hint: FIELD_HINTS[field],
-            control,
-            overridden: isOverridden(field),
-            // 「跟随整机」= 清掉该字段的 DSH 覆盖，此后它重新由她自己的文件决定
-            // （下次挂载还会把她的当前值搬回来）。没有这个复位，用户一旦碰过某项
-            // 就再也回不到「跟随她」，而那是个只能进不能出的决定。
-            onReset: () => props.clearHertaField?.(field),
-          });
+    /** 一个字段 → 一行。控件类型由字段表的 `kind` 决定，加一项不用改这里。 */
+    const fieldRow = (field: string): unknown => {
+      const spec = (FIELDS as Record<string, any>)[field];
+      const value = (values as Record<string, unknown>)[field];
+      // 引擎那一行不是「标签 + 一个控件」：它还有逐档现状、本地就绪、试听。
+      // 通用形状装不下，所以单开一个组件（其余字段照旧由 `kind` 决定控件）。
+      if (field === "voiceEngine") {
+        return createElement(VoiceEngineRow, {
+          key: field,
+          value,
+          disabled,
+          muted: (values as Record<string, unknown>).voiceMuted === true,
+          setField,
         });
-      return createElement(
+      }
+      let control: unknown;
+      if (spec.kind === "boolean") {
+        control = createElement(Switch, {
+          checked: value === true,
+          label: spec.label,
+          disabled,
+          onChange: (next: boolean) => setField(field, next),
+        });
+      } else if (spec.kind === "enum") {
+        control = createElement(EnumControl, {
+          field,
+          value,
+          disabled,
+          onChange: (next: string) => setField(field, next),
+        });
+      } else if (spec.kind === "number") {
+        control = createElement(NumberControl, {
+          field,
+          value,
+          disabled,
+          onChange: (next: number) => setField(field, next),
+        });
+      } else {
+        control = createElement(WorkspaceInput, {
+          value: typeof value === "string" ? value : "",
+          disabled,
+          onCommit: (next: string) => setField(field, next),
+          useWorkspaces: props.useWorkspaces,
+        });
+      }
+      return createElement(Row, {
+        key: field,
+        label: spec.label,
+        hint: FIELD_HINTS[field],
+        // 「暂未接线」的逐行原因来自字段表本身（`FIELDS[field].note`）——
+        // 页面不抄第二遍，所以字段表改了这里跟着改。
+        note: typeof spec.note === "string" ? spec.note : undefined,
+        control,
+      });
+    };
+
+    /** 一个分组：标题 + 可选说明 + 若干行。 */
+    const group = (title: string, hint: string | undefined, rows: readonly unknown[]): unknown =>
+      createElement(
         "section",
-        { key: group.title },
-        createElement("h3", { style: GROUP_TITLE_STYLE }, group.title),
-        group.hint === undefined ? null : createElement("div", { style: { ...NOTE_STYLE, marginTop: -6, marginBottom: 6 } }, group.hint),
+        { key: title },
+        createElement("h3", { style: GROUP_TITLE_STYLE }, title),
+        hint === undefined
+          ? null
+          : createElement("div", { style: { ...NOTE_STYLE, marginTop: -6, marginBottom: 6 } }, hint),
         ...rows,
       );
-    });
 
-    return createElement("div", { style: SECTION_STYLE }, header, ...groups);
+    const wiredGroups = SETTINGS_GROUPS.map((entry) =>
+      group(
+        entry.title,
+        (entry as { hint?: string }).hint,
+        // 「语音」那一栏末尾多一行宿主事实（认领状态 + 重新认领）。它**不是**设置
+        // 字段，所以不来自字段表；按 title 挂在这里，是因为它讲的是上面那几行的
+        // **后果**（谁在说话、为什么回落、到没到上限）—— 先选，再看状态。
+        entry.title === "语音"
+          ? [...entry.fields.map(fieldRow), createElement(MiniMaxVoiceRow, { key: "minimax-voice" })]
+          : entry.fields.map(fieldRow),
+      ),
+    );
+
+    const credentialsGroup = group(
+      "密钥",
+      "密钥存进 DSH 的凭据存储（`$DSH_HOME/.credentials.yaml`，权限 0600），不写进 profile 的明文配置。上面那行状态读的是宿主的事实，不是本地的乐观值。",
+      CREDENTIALS.map((spec) => createElement(CredentialRow, { key: spec.ref, spec })),
+    );
+
+    const actionsGroup = group(
+      "整机动作",
+      "下面两个都是**真动作**：宿主侧的实现已经存在，按下去会有实际后果。",
+      [createElement(VoiceModelRow, { key: "voice-model" }), createElement(NetdiskRow, { key: "netdisk" })],
+    );
+
+    // 「暂未接线」那一组由字段表自己的 `UNWIRED_FIELD_NAMES` 生成 ——
+    // 名单与逐行原因都只有一份，在 `settings-schema.js` 里。
+    const unwiredGroup = group("暂未接线", UNWIRED_HINT, UNWIRED_FIELD_NAMES.map(fieldRow));
+
+    return createElement(
+      "div",
+      { style: SECTION_STYLE },
+      header,
+      ...wiredGroups,
+      credentialsGroup,
+      actionsGroup,
+      unwiredGroup,
+    );
   };
 }
 
 /**
  * 绑定设置表单并挂上「黑塔」设置页。
  *
- * 两步都是**惰性**的，这是有意的：
+ * 三件事都是**惰性**的，这是有意的：
  *   · `ctx.inject(["configForms","slots"], …)` 而不是写进 `inject` 数组 ——
  *     没有设置 UI 的组合（无头 / SDK）里这两个服务不存在，硬依赖会让
  *     整个客户端插件永不挂载，连她的对话页签一起没。
+ *   · 凭据缝既不进 `inject` 数组、**也不用 `inject` 取**：它是握手之后挂到
+ *     `remote` 上的命名空间，注入时机的行为实测不可靠（见 `resolveCredentials`）。
+ *     走 `ctx.get("remote.credentials")` + 有界轮询，缺席时只是密钥那几行显示
+ *     「不可用」，其余设置照常可用。
  *   · 原语用动态 import —— 解析失败只损失这一页，不影响其余界面。
  *
- * @param ctx - 客户端 cordis 上下文（只需要 `inject`）。
+ * @param ctx - 客户端 cordis 上下文（`inject` + 服务解析）。
  * @param mark - 诊断标记对象（DSH 不把客户端上下文暴露到 window）。
  */
-function installSettingsSection(ctx: { inject(names: readonly string[], callback: (scoped: any) => unknown): unknown }, mark: Record<string, unknown>): void {
+function installSettingsSection(
+  ctx: {
+    inject(names: readonly string[], callback: (scoped: any) => unknown): unknown;
+    /** cordis 的服务解析（凭据缝靠它取，见 `resolveCredentials`）。 */
+    get?(name: string): unknown;
+    remote?: unknown;
+    effect?(callback: () => unknown, label?: string): unknown;
+  },
+  mark: Record<string, unknown>,
+): void {
+  // 凭据缝：**不用 inject**（实测不可靠，见 `resolveCredentials` 的注释），
+  // 改成有界轮询 `ctx.get("remote.credentials")`。服务缺席时它永远保持 null ——
+  // 页面把密钥行显示成「不可用」并给出原因，而不是假装能用。
+  watchCredentials(ctx, mark);
+
   ctx.inject(["configForms", "slots"], (scoped) => {
     const form = scoped.configForms.get(MACHINE_NS) as MachineForm;
     machineForm = form;
@@ -1263,9 +2793,6 @@ function installSettingsSection(ctx: { inject(names: readonly string[], callback
                 setHertaField: (field: string, value: unknown) => {
                   void writeMachineField(field, value);
                 },
-                clearHertaField: (field: string) => {
-                  void followMachineField(field);
-                },
               }),
             },
             Component,
@@ -1293,6 +2820,13 @@ function apply(ctx: {
   };
   /** 按需注入一个服务（服务缺席时回调不触发，不会卡住已注册的视图）。 */
   inject(names: readonly string[], callback: (scoped: any) => unknown): unknown;
+  /**
+   * 登记一个随插件 fiber 释放的副作用（回调返回退订函数）。
+   *
+   * MiniMax 的 SSE 订阅用它：插件卸载时连接必须跟着关，否则每挂一次就留一条
+   * 永不关闭的 `EventSource`（浏览器对同源并发连接数是有限的）。
+   */
+  effect?(callback: () => unknown, label?: string): unknown;
 }): void {
   // 诊断标记。DSH 不把客户端的 cordis 上下文暴露到 window，所以这是从外部
   // （无头浏览器 / CDP）确认插件走到哪一步的唯一可靠信号。
@@ -1309,6 +2843,13 @@ function apply(ctx: {
   // 设置：绑定 DSH 的设置表单 + 在设置里挂上「黑塔」一页。
   // `voiceScope` 也从这一份表单读，所以整机面板与 DSH 设置页永远同值。
   installSettingsSection(ctx, mark);
+
+  // MiniMax 的 PCM 流：**插件级订阅**，不是某个视图里的订阅。
+  //
+  // 理由：声音该在用户停在任何页签时都响。挂在整机视图里的话，切走页签就哑了 ——
+  // 那正是「这功能只在开着某个页签时有效」的毛病。这里的退订随插件 fiber 释放
+  // （`ctx.effect`），页面卸载时连接跟着关掉。
+  ctx.effect?.(() => startMiniMaxStream(), "dsh-herta: MiniMax PCM 流");
 
   ctx.slots.inject("conversation.view", () => {
     const disposer = ctx.slots.register(

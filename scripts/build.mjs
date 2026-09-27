@@ -1,8 +1,9 @@
 /**
  * dsh-herta 的构建脚本。
  *
- * 产出两个文件到 lib/：
+ * 产出到 lib/：
  *   lib/index.js    —— host 半侧（直接从 src/host 拷贝，目前是纯 JS，无需编译）
+ *   lib/minimax/    —— MiniMax 那一组**移植件**（TS → JS，见 build-minimax.mjs）
  *   lib/client.js   —— client 半侧（esbuild 打包，外面套 DSH 的模块加载器）
  *
  * 三件关键的事：
@@ -20,6 +21,7 @@
  *    `import x from "./y.js"` 互相引用。磁盘上没有 y.js，只有 y.ts/y.tsx。
  *    esbuild 默认不会做这个替换，必须自己接一个 onResolve。
  */
+import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -29,7 +31,7 @@ const root = resolve(here, "..");
 const outDir = join(root, "lib");
 
 /** Herta 源码树；界面组件从这里取。可用 HERTA_SRC 覆盖。 */
-const HERTA_SRC = process.env.HERTA_SRC ?? "E:\\deepseek工作区\\HerTa\\Herta-src";
+const HERTA_SRC = process.env.HERTA_SRC ?? resolve(root, "..", "Herta-src");
 /** Herta 渲染层根目录 —— 等价于官网 vite 配置里的 `@gui` 别名。 */
 const HERTA_RENDERER = join(HERTA_SRC, "packages", "gui", "src", "renderer");
 
@@ -182,6 +184,13 @@ async function main() {
   if (!existsSync(HERTA_RENDERER)) {
     throw new Error(`找不到 Herta 渲染层：${HERTA_RENDERER}（可用 HERTA_SRC 覆盖）`);
   }
+
+  // 0) MiniMax 那一组模块是 TS 移植件，先单独编译到 lib/minimax/。
+  //    其余 host 模块仍是逐字节拷贝 —— 这条缝只开给那一组（理由见 build-minimax.mjs）。
+  execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", join(here, "build-minimax.mjs")], {
+    stdio: "inherit",
+    cwd: root,
+  });
 
   const esbuildEntry = findEsbuild();
   const esbuild = await import(pathToFileURL(esbuildEntry).href);

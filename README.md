@@ -40,7 +40,7 @@
 | 变了什么 | 0.1.5 时的写法 | 0.1.7 的现状 | 本仓库怎么办 |
 |---|---|---|---|
 | **agent preset 的载体** | `$DSH_HOME/.agent-presets/<name>/agent.cordis.yml`（一整棵 cordis 树）+ `preset.yml` | 该目录机制**整个移除**（运行时里已无任何代码引用 `.agent-presets`）；preset 变成一条 `@deepseek-ai/dsh-agent-preset` loader 行，官方写成 `dsh-web-app/presets/*.patch.yml` | 生成 `preset/herta.patch.yml`，作为**第二条 bundle patch** 随插件一起装（`dsh.bundle.patch` 现在可以是数组） |
-| **用户偏好的存放（设置域）** | 宿主 `ctx.settings.register(ns, schema)` + 客户端 `settingsScope.bind({namespace})` | 两者**一起消失**：`SettingsProvider`/`SettingsScope`/`SettingsRegisterOptions` 不再导出，客户端 `settingsScope` 服务不存在，事件 `settings/updated`、`settings/document-updated` 也没了；换成基于插件 Config 的 `SettingsForms`/`configForms`，**没有第三方命名空间入口** | 语音偏好改为**自持**：`$DSH_HOME/dsh-herta-voice.json` + 白名单端点 `GET/PUT /herta-settings`（理由与代价见 `src/host/voice-settings.js` 文件头） |
+| **用户偏好的存放（设置域）** | 宿主 `ctx.settings.register(ns, schema)` + 客户端 `settingsScope.bind({namespace})` | 两者**一起消失**：`SettingsProvider`/`SettingsScope`/`SettingsRegisterOptions` 不再导出，客户端 `settingsScope` 服务不存在，事件 `settings/updated`、`settings/document-updated` 也没了；换成基于插件 Config 的 `SettingsForms`/`configForms`，**没有第三方命名空间入口** | 用后者：插件自己的 volatile `Config`（落 profile 的 `cordis.patch.yml`），客户端挂 `settings.section` 一页。密钥另走凭据缝 `ctx.remote.credentials`（值进 `$DSH_HOME/.credentials.yaml`，不进明文配置）。2026-09-26 起**黑塔的设置只有这一处** |
 | **消息来源的 kind（会话格式 v4）** | `{ kind: "plugin", plugin: "dsh-herta" }` | v4 只认「生产者自有 kind」，`kind: "plugin"` 在**写入会话时**就被 `assertV4SourceRowAdmission` 拒绝（`format v4 message requires a producer-owned source kind`）；第三方插件的合法形状是 `{ kind: "plugin:<包名>" }` —— 这正是 DSH 自己的 v3→v4 迁移为旧行推导出的形状，两代读回同一个 kind | 全部改成 `{ kind: "plugin:dsh-herta" }`（`agent.steer` 两处 + 两个 `PLUGIN_SOURCE`）；新增 `scripts/test-source-kind.mjs` 钉住这条不变量 |
 
 > ⚠️ 第三处症状最难定位：被拒的事件**根本没进会话日志**（写入前就抛了），
@@ -56,8 +56,11 @@
 
 > 升级 DSH 后先跑这三条：
 > 1. `dsh --profile <p> --dump-config` → 应有 `- id: preset-herta`，且其 `config.plugins` 末尾有 `plane: preset`
-> 2. 启动日志 → 应有 `plane=host`、`plane=preset`、`叙述层依赖就绪`、`设置端点已挂`，**不应**出现 `settings.register is not a function`
-> 3. `npm test` → 608 项；`npm run test:integration` → 28 项
+> 2. 启动日志 → 应有 `plane=host`、`plane=preset`、`叙述层依赖就绪`、
+>    `设置命名空间已就绪：herta（自带页面，不自动生成）`、`整机页面已挂：/herta-ui`，
+>    **不应**出现 `settings.register is not a function`，也不应再出现
+>    `从整机迁移设置：…`（种子已删除）或 `设置写回已挂`（写回已删除）
+> 3. `npm test` → 1059 项（20 组）；`npm run test:integration` → 28 项
 
 ---
 
@@ -88,6 +91,23 @@ clone 后**开箱即用，无需自备素材**。
 ---
 
 ## 装
+
+### 插件市场 / npm
+
+条目已提交上游精选目录 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
+（PR [#5946](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5946)，**待合并**）。
+合并之后，DSH 内置的**插件市场（dshmarket）**里搜 `herta` 就能找到并一键安装。
+
+> ⚠️ **合并前搜不到，这是上游目录的性质，不是本仓库能绕开的**：市场的搜索候选集
+> 只有 `awesome-dsh-plugin.com/plugins.json` 里的条目（4367 条，由上游 CI 每日重建），
+> **不含**本机已装的插件，也没有「自定义目录源」这个用户入口。所以 `file:` 装进来的
+> 插件永远不出现在搜索结果里 —— 要能被搜到，就必须先被收录。
+
+等不及合并可以直接装 npm 包（0.1.4 起有）：
+
+```powershell
+dsh plugin --profile desktop add dsh-herta
+```
 
 ### 桌面应用（0.1.7-rc.2）
 
@@ -222,7 +242,7 @@ iframe 是**独立文档**，所以她的原版样式**原样使用**（`:root` 
 > 不像上游能在后端事件发生当拍插话。所以分拍是「事件后一个 step 补评」——
 > 效果等价，时机晚一拍。
 
-### 四条路由
+### 六条路由
 
 前两条是**白名单静态资源**：启动时扫出文件索引，请求路径必须命中，否则 404。
 不存在路径穿越的可能，也就不需要 `../` 过滤这类容易写错的代码。
@@ -230,24 +250,35 @@ iframe 是**独立文档**，所以她的原版样式**原样使用**（`:root` 
 - `/herta-voice` —— 80 条语音 + 代码生成的 `index.json`
 - `/herta-ui` —— 整机页面（html / js / css / 开场段 / pdf worker）
 
-后两条不是静态资源，是宿主自持的两个读写端点：
+后三条不是静态资源，是宿主自持的读写端点：
 
-- `/herta-settings` —— 语音偏好。`GET` 读、`PUT` 写；body 上限 8 KB，只认
-  `engine`（`local|minimax|mimo`）与 `realtimeVoice`（布尔），非法字段被丢弃、
-  非法 JSON 回 400、其他方法回 405；落盘走「临时文件 + rename」，读方看不到半截 JSON。
-  （0.1.7 起 DSH 设置域不再接受第三方命名空间注册，所以自持 —— 见
-  `src/host/voice-settings.js` 文件头。）
 - `/herta-voice-model` —— 本地语音模型（离线 TTS）的下载。
   `GET` 状态、`POST {"action":"download"|"cancel"|"remove"}` **点火即返回**，
   进度靠轮询 `GET` 拿。状态码与 `phase` 都用上游那套
   （`absent` / `downloading` / `ready` / `failed`，失败带 `error` 键）。
   详见下一节。
+- `/herta-minimax-events` —— **SSE**：MiniMax 云端语音的 PCM 推给浏览器半侧。
+  三种帧：`tts`（一个单元的 `Int16` PCM，base64）/ `ttsStop` / `state`。
+  浏览器半侧转成 `push("voice", …)` 交给整机 iframe（iframe 缺席时自己在父窗口用
+  WebAudio 放）。走自建 SSE 而不是 DSH 的事件通道，理由见下一条注释。
+- `/herta-minimax-state` —— 认领状态 + 手动动作：
+  `GET` 快照，`POST {"action":"adopt"|"reset"}`（设置页「重新认领」按钮）。
+
+> **为什么 PCM 不走 DSH 的宿主→客户端事件**：那条路是 `ctx.remote.$on`，事件名在
+> `@deepseek-ai/dsh-api-remotes` 里是**硬编码白名单**（第三方插件没有扩展点），
+> 而且过线前要过 `isJsonValue` —— `Int16Array` 一律被拒（不是真数组、原型也不是
+> `Object.prototype`）。所以 PCM 只能走插件自持的 HTTP 路由，SSE 是 `dsh-client-hmr`
+> 已经在用、本仓库已验过的形状。
+
+> **`/herta-settings` 已删除**（0.1.7 那版曾用它自持语音偏好）。现在客户端直接走
+> `ctx.configForms`，再留一条 HTTP 写入口就是第二个真相来源。密钥也不走 HTTP ——
+> 它们走 DSH 官方的凭据缝 `ctx.remote.credentials`。
 
 ---
 
 ## 本地语音模型（离线 TTS 的模型那半）
 
-设置面板里的「下载模型」现在是真的：宿主会去上游发布的地址取那一个归档。
+DSH 设置 ▸ 黑塔 ▸ 整机动作 里的「下载」现在是真的：宿主会去上游发布的地址取那一个归档。
 
 **固定参数从上游扒来，钉在代码里**（`src/host/tts-release.js`）——不是运行时问服务端：
 
@@ -275,8 +306,8 @@ and therefore an app release: the download never trusts the host, only this file
 
 > ✅ **运行时已随包分发**（`assets/tts-runtime/`，22 MB，sherpa-onnx 1.13.6 +
 > onnxruntime 1.27.1）。宿主会**真探测**它（拉子进程把 addon 加载起来拿版本号，
-> 结果进程内缓存），探测通过才报 `runtime: true` —— 设置面板把「下载模型」按钮
-> 与「实时语音」开关都 gate 在这个标志上，写死 true 就是仓库别处修过的假绿。
+> 结果进程内缓存），探测通过才报 `runtime: true` —— DSH 设置页里「本地语音模型」
+> 那行按它如实报「运行时未就绪」，写死 true 就是仓库别处修过的假绿。
 >
 > 合成本身也实测过：`scripts/test-tts-runtime.mjs` 用真实模型合成
 > 「你好。我是黑塔，天才俱乐部第八十三号。」→ **24 kHz / 5.08 s / 非静音**
@@ -296,7 +327,7 @@ and therefore an app release: the download never trusts the host, only this file
 
 ---
 
-## 五个工具
+## 六个工具
 
 | 工具 | 作用 |
 |---|---|
@@ -304,7 +335,8 @@ and therefore an app release: the download never trusts the host, only this file
 | `herta_narrative_read` | 读某一份的完整正文 |
 | `herta_memory_save` | 随手记一笔（过格式门 + 标题新颖性） |
 | `herta_dream` | 做梦：门槛更高（另加篇幅下限），并记进做梦账本 |
-| `herta_speak` | 让模型能主动发声；片段信息经 `presentationMeta` 落到工具结果的 `meta` 上，浏览器侧读取后播放 |
+| `herta_speak` | 让模型能主动发声；片段信息经 `presentationMeta` 落到工具结果的 `meta` 上，浏览器侧读取后播放。**放的是她的录音片段（`.opus`），不经过任何合成** |
+| `herta_say` | 用她自己的克隆声音**说一句话**（MiniMax 云端合成，走 SSE 推给界面）。既是调试入口，也是语音链路的验收通道 —— 端到端哑掉时，先用它把「合成」与「推给界面」两段分开看 |
 
 ## 三道门
 
@@ -455,7 +487,9 @@ Get-Content "$env:USERPROFILE\.dsh\dsh-herta-narrative.json"
 Get-Content "$env:DSH_HOME\dsh-herta-narrative.json"
 ```
 
-同一目录下还有语音偏好 `dsh-herta-voice.json`（0.1.7 起自持，见上文「兼容性」）。
+同一目录下**曾经**还有语音偏好 `dsh-herta-voice.json` —— 那条自持路线已废弃
+（语音偏好现在是 DSH 设置里的字段）。旧文件若还在，只是一份没人读的历史残留；
+插件启动时那次「读→改名 `.imported`」的一次性迁移也已删除。
 
 > **`turnStop` 那一条是「它活着」最硬的信号** —— 比「有没有人 veto」硬得多：
 > 放行不留痕迹，而钩子被触发过就说明链路接上了。
@@ -493,8 +527,11 @@ node scripts\mock-llm-server.mjs --port 8791
   `HERTA_SRC`（Herta 源码树）仍有一个本机默认值，可用环境变量覆盖。
   ⚠️ 桌面应用的包在 `app.asar` 里，构建脚本读不到 —— 构建请指向一份
   **解开目录**的 DSH 安装（npm 安装或便携版）。
-- **语音偏好不再出现在 DSH 的设置界面里**。0.1.7 移除了第三方注册设置命名空间的
-  入口，所以它只在她自己的设置面板里可改（代价见上文「兼容性」一节）。
+- **她的设置页已删除，全部设置由 DSH 设置 ▸ 黑塔 统一管理**（2026-09-26）。
+  `Herta-src` 里的 `SettingsModal` + 7 个分页 + 侧栏入口按钮整块移除，插件也不再往
+  她自己的 `settings.json` 写任何字节（写回、种子、`↺ 跟随整机` 一并删除）。
+  仍在「暂未接线」组里的 9 项**整机当前不读**，页面逐行标注了原因 ——
+  详见 `docs/设置搬迁.md`。（`voiceEngine` 与 `realtimeVoice` 已在 2026-09-27 移出这一组，见下。）
 - **整机页的 `submitText` 未实现** —— 她那套输入框既然已隐藏，这条路径日常碰不到；
   但若要恢复输入框，必须同时把 bridge 的 `submitText` 补上，否则还是发不出消息。
 - **C 层客户端消费 cue 的那一半未端到端验证** —— cue 的**抽取**已有单测覆盖
@@ -502,13 +539,25 @@ node scripts\mock-llm-server.mjs --port 8791
   一次模型调用才能走通。
 - **整机的 `listSessions` 返回空** —— 她自己的会话列表 / 开场白 / 设备卡还没接；
   整机目前只服务「当前这一个 DSH 会话」。
-- **C2（全量本地 TTS）已能合成，但还不会「自己开口」**。现在：模型能按上游地址
+- **云端语音（MiniMax）已端到端接通（2026-09-27）**：她的回复正文 → 宿主分段 →
+  MiniMax 云端合成（**认领**她账号上已有的克隆，不做上传/克隆）→ SSE
+  `/herta-minimax-events` → 浏览器半侧 → `push("voice", …)` → 整机 iframe 播放
+  （iframe 缺席时父窗口用 WebAudio 自己放）。边写边念；复核否决/要求重说时把还在流的
+  那一段掐掉；每轮 800 字上限；云端不可用（没密钥/没认领到克隆/被拒/克隆被删）时
+  **显式回落本地模型**，并在设置页写明"现在是谁在说话"。**仍未接**的：
+  `voiceEngine = local / mimo` 这两条（本地模型目前只服务 `herta_speak` 与这条回落，
+  `mimo-tts.js` 仍未实例化）—— 这是决定不是遗漏。
+  单测：`npm run test:minimax`（324 项；`test-minimax-segment` 还与上游做了
+  16164 次差分比对，0 处不一致）。
+- **C2（全量本地 TTS）已能合成**。现在：模型能按上游地址
   下载 / 校验 / 解包 / 装好，运行时（22 MB sherpa-onnx）随包分发且被**真探测**，
   合成本身用真实模型实测过（24 kHz / 非静音，`scripts/test-tts-runtime.mjs` 22 项）。
-  **没接的是最后一跳**：把她的回复自动送去合成、再推给整机 iframe 播放。
-  所以「实时语音」开关会被点亮（`canSpeak = bundle && runtime && !failed` 都为真，
-  而这一次这两个标志都**不是**写死的），但打开后她暂时不会出声。
-  音量/静音那两个偏好走上游自己的渲染层 store，同样还没接。
+  它现在是**回落的音源**：MiniMax 不可用时由同一条 SSE 通道推给界面。
+  注意回落需要先把模型下下来（`$DSH_HOME/tts/herta-best-e72`）；没装时回落会
+  明确报「模型还没装」，不会假装出声。
+  **静音与音量走通了**（2026-09-26）：它们是 DSH 设置里的 `voiceMuted` / `voiceVolume`，
+  经 bridge 下发给整机的 `voice-prefs.ts`（`hydrateVoicePrefs`），播放路径真的读它们。
+  换成独立版 / 官网 demo（没有那个 bridge 成员）时该模块退回自己的 localStorage。
 - **整机页面占 20.1 MB**（16 MB JS + 3 MB 开场段）。开场段可以改成首次运行下载。
 - **B 层的「知识」部分按计划推迟了**。现在实现的是**记忆**（货架 + 做梦账本 +
   四个工具）；Herta 上游 `@herta/knowledge` 里还有一套 sqlite 知识库
@@ -545,6 +594,62 @@ MIT 范围内**，权利归米哈游及各自所有者。本仓库已按《崩�
 
 ## 版本历史
 
+### v0.1.4
+
+**把 Herta 的 MiniMax 语音「拉过来」** —— 从"设置里存得下密钥"到"她真的用那个声音说话"。
+
+- 新增 `src/host/minimax/`（**TS 移植件**，单独一条编译缝 `scripts/build-minimax.mjs`，
+  用 Node 自带的 `stripTypeScriptTypes`，不引 esbuild/tsc）：
+  - `api.ts` —— HTTP 层，忠实移植上游 `minimax-api.ts`；**不含**上传/克隆
+    （用户决策：只认领已有克隆，不把 8.36 MB 参考音频带进插件）。
+  - `segment.ts` —— `segmentSpeechUnits` 移植；与上游真身做了 **16164 次差分比对，0 处不一致**。
+  - `voice.ts` —— 只认领：按 `LEGACY_REFERENCE_TAG = "b1a43133"` 找她自己那个克隆
+    （那个 tag 正是 `herta-reference.wav` 的 SHA-256 前 8 位），失败冷却 10 分钟。
+  - `synthesizer.ts` —— refusal 三态 doom 整个 utterance、取消静默、超时算 `network`、
+    并发上限 2、`voice_missing` 交给宿主决定回落。
+  - `pipeline.ts` —— 纯状态机：边写边念、`turn-stopping` 时掐掉还在流的那段、
+    每轮字符上限、子代理的文字不念。
+  - `state.ts` —— 克隆记录落 `$DSH_HOME/dsh-herta-minimax.json`（机器状态，不进设置表单）。
+- `src/host/minimax-voice.js` —— 宿主接线：凭据缝读密钥、启动认领 + 凭据变更重认领、
+  SSE `/herta-minimax-events` + 状态端点 `/herta-minimax-state`、按 `voiceEngine` 分发、
+  **显式回落本地模型**并在状态里写明原因。
+- 新工具 `herta_say`（云端合成说一句，调试 + 验收通道）；`voiceEngine` 与
+  `realtimeVoice` 从 `wired: false` 翻成 `wired: true`（那 11 项「暂未接线」因此变成 9 项）。
+  `realtimeVoice` 是**自动念回复**的总开关：关掉就不再自动送去合成（省钱），
+  而 `herta_say` 是明确要求说一句，不受它管。
+- 密钥走凭据缝：`MINIMAX_API_KEY` / `MINIMAX_PLAN_API_KEY`。没填就回落本地，
+  状态里说清是哪一种 unavailable。
+- 测试：`npm run test:minimax` = **388 项**
+  （api 98 / segment 112 / voice+state 43 / synthesizer 37 / pipeline 43 / pcm 55）。
+  全量 `npm test` = **20 组 1059 项全过、0 失败**（14 组逻辑用例 671 项 + 上面 6 组 388 项）。
+
+**仍未接**：`voiceEngine = local / mimo` 这两条（本地模型目前只服务 `herta_speak` 与
+上面那条回落；`mimo-tts.js` 仍未实例化）—— 这是决定，不是遗漏。
+
+**同时按 DSH 插件清单规范收口**（`package.json`，这一版才补齐）：
+
+- `dsh.manifestVersion: 1` —— 清单格式标识，与包版本、会话格式版本都无关。
+- `engines.dsh: ">=0.1.7-rc.1 <0.2.0-0"` —— 作者声明的兼容 DSH 版本区间。
+  **要带显式下界**：写成 `>=0.1.0-rc.1` 这种宽区间时，`0.1.7-rc.2` 一类预发布版会被
+  semver 静默排除（预发布版只有在同 `major.minor.patch` 的比较子上才被认）。
+  插件市场的「按宿主发现」读的就是这个字段（也接受同版本线的 `@deepseek-ai/dsh-*`
+  peer 声明）。
+- `locale/en.json` + `locale/zh.json`（形状 `{ "meta": { title, description } }`）——
+  插件管理页与市场卡片**不激活插件**也能读到本地化的标题与简介；
+  配套 `exports` 补 `./locale/*.json`、`files` 收 `locale`。
+- `files` 补 `NOTICE.md` / `THIRD-PARTY.md`。npm 包会带上 `assets/voice/`（80 条语音）
+  与 `preset/herta.patch.yml` 这些**第三方同人素材**，法律声明必须随包一起走；
+  TTS 运行时的许可原文本来就在 `assets/tts-runtime/LICENSES/`（含 espeak-ng 的
+  GPL-3.0 全文），随 `assets` 一起发，这一项此前已满足。
+- `description` 改中英双语、补 `keywords`、补 `publishConfig.access: "public"`。
+
+**刻意没加 `peerDependencies`。** 规范允许「`engines.dsh`」与「同版本线
+`@deepseek-ai/dsh-*` peer 声明」二选一，市场两者都读。这里只声明 `engines.dsh`：
+本包当前的安装形态是 `file:` 本地路径，加 peer 会让 pnpm 在安装时去解析一批宿主包，
+收益（市场兼容性展示）与 `engines.dsh` 重合，风险却不重合。等有真实 npm 安装反馈再说。
+
+**首次发到 npm**：`dsh-herta@0.1.4` —— 此前只在 GitHub 上，npm 上这个包名还是空的。
+
 ### v0.1.3
 
 **首个把「0.1.7 兼容修复」真正发出去的版本。** v0.1.2 那批改动（preset 载体迁移、
@@ -562,8 +667,8 @@ tag 为 `v0.1.3`：
 - **本地 TTS 运行时随包分发**（`assets/tts-runtime/`，22 MB）：sherpa-onnx 1.13.6 +
   onnxruntime 1.27.1 + espeak-ng / piper-phonemize 的 fork，许可原文在 `LICENSES/`。
   宿主**真探测**它（子进程把 addon 加载起来拿版本号）之后才报 `runtime: true` ——
-  设置面板的「下载模型」按钮与「实时语音」开关都 gate 在这个标志上，两个标志都不是
-  写死的。合成跑在子进程里（`src/host/tts-worker.cjs`）：sherpa 的 espeak 构建在
+  DSH 设置页里「本地语音模型」那行会如实报「运行时未就绪」而不是把按钮点亮，两个标志
+  都不是写死的。合成跑在子进程里（`src/host/tts-worker.cjs`）：sherpa 的 espeak 构建在
   Windows 上处理不了非 ASCII 绝对路径，而本机路径里就有中文。
   ⚠️ espeak-ng 是 **GPL-3.0-or-later 且静态链接**，分发前需自行拍板 —— 见
   [`THIRD-PARTY.md`](./THIRD-PARTY.md)。
@@ -581,11 +686,18 @@ tag 为 `v0.1.3`：
 兼容性细节（三处破坏性 API 变更、修之前各自的症状）见上面「兼容性」一节与
 下面 v0.1.2 一节 —— v0.1.2 的正文是前两处真正发出去的内容。
 
-**验证**：`npm test` 13 组纯逻辑用例 **608 项全过**（test-narrative 31 /
+**验证**：`npm test` 13 组纯逻辑用例 **622 项全过**（test-narrative 31 /
 dream 28 / mapping 41 / narrative-hints 54 / supervisor 81 / session-surface 32 /
 beat-policy 61 / dream-distill 55 / mimo-tts 40 / voice-settings 50 /
-voice-model 50 / herta-settings 78 / source-kind 7），另有 28 项 LLM 路径集成测试
+voice-model 50 / herta-settings **92** / source-kind 7），另有 28 项 LLM 路径集成测试
 （`npm run test:integration`）。
+
+> **2026-09-26 收口**：`herta-settings` 那一组被**重写**过。它原来测的是「把值写回
+> 整机自己读的两份 `settings.json`」（读-改-写、原子落盘、旧文件迁移、只写用户覆盖过
+> 的字段）—— 那条链路连同 `src/host/settings-sync.js` 已整体删除，所以那些断言消失，
+> 换成了字段表/Wired 注解/Config 同源 + 五组**防回归**（写回不得复活、语音偏好必须
+> 真接 bridge、整机设置页组件必须不存在、`Select` 必须存在、凭据缝必须用
+> `ctx.get` 而不是 `inject` 取）。数字从 78 变 92 不是「测多了」，是测的东西换了。
 
 **仍未接**：回复 → 合成 → 整机 iframe 播放那一跳 —— 「实时语音」开关会亮，
 但她暂时不会自己开口。
@@ -605,6 +717,10 @@ voice-model 50 / herta-settings 78 / source-kind 7），另有 28 项 LLM 路径
   改为自持：`$DSH_HOME/dsh-herta-voice.json` + 白名单端点 `GET/PUT /herta-settings`。
   修之前的表现是：宿主打一行 `settings.register is not a function`，客户端那个
   `ctx.inject(["settingsScope"])` **永不回调** —— 面板能开能点，值永远是默认值。
+
+  > ⚠️ **这一条后来又被推翻了**（2026-09-26）：`SettingsForms` 已经够用（插件自己的
+  > volatile `Config` + 客户端 `settings.section`），所以那条自持路线与 `/herta-settings`
+  > 端点一并删除。读上面的历史时别照它去做 —— 现在语音偏好就是 DSH 设置里的字段。
 - **修构建/测试脚本**：去掉全部写死的本机绝对路径；preset 底本从
   `dsh-agent-presets/presets/standard/*`（已不存在）改为
   `dsh-web-app/presets/standard.patch.yml`；`test-dream.mjs` 不再依赖某个

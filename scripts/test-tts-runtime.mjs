@@ -22,7 +22,13 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TTS_RUNTIME_DIR, probeTtsRuntime, synthesize } from "../src/host/tts-runtime.js";
+import {
+  TTS_RUNTIME_DIR,
+  disposeLocalWorker,
+  localWorkerStatus,
+  probeTtsRuntime,
+  synthesize,
+} from "../src/host/tts-runtime.js";
 
 const MODEL_ROOT = process.env.HERTA_TTS_MODEL_ROOT;
 if (MODEL_ROOT === undefined || MODEL_ROOT === "") {
@@ -107,6 +113,38 @@ for (let s = 0; s < 10; s += 1) {
 const minE = Math.min(...energies);
 const maxE = Math.max(...energies);
 check("波形有起伏（不是一条平线）", maxE > minE * 2, `min=${minE.toFixed(0)} max=${maxE.toFixed(0)}`);
+
+// ── 4. 常驻进程：模型只该加载一次（2026-09-28 那次加速的真机证据）──────────
+const st1 = localWorkerStatus();
+check("第一次合成之后常驻进程是热的", st1.state === "running", JSON.stringify(st1));
+check("状态里带着模型加载耗时（那是被省掉的那部分）", typeof st1.warmMs === "number" && st1.warmMs > 0, String(st1.warmMs));
+
+const out2 = join(outDir, "speech2.wav");
+const t2 = Date.now();
+const r2 = await synthesize("第二句，验证它复用了同一个进程。", { modelRoot: MODEL_ROOT, out: out2 });
+const warmSecs = (Date.now() - t2) / 1000;
+console.log(`热合成（${warmSecs.toFixed(2)}s）`);
+check("热合成成功", r2.ok === true, r2.error ?? "");
+check("复用同一个进程（pid 没变）", localWorkerStatus().pid === st1.pid);
+check(
+  "热合成明显快于冷启动（省掉的正是那 2.6–3.7 s 的模型加载）",
+  warmSecs * 3 < synthSecs,
+  `冷 ${synthSecs.toFixed(2)}s vs 热 ${warmSecs.toFixed(2)}s`,
+);
+
+const t3 = Date.now();
+const r3 = await synthesize("有事吗？没事我就走了", { modelRoot: MODEL_ROOT, out: join(outDir, "speech3.wav") });
+const previewSecs = (Date.now() - t3) / 1000;
+console.log(`试听台词（热，${previewSecs.toFixed(2)}s）`);
+check(
+  "热的试听台词 2 秒内出来（这是设置页按下去要等的真实时间）",
+  r3.ok === true && previewSecs < 2,
+  `${previewSecs.toFixed(2)}s`,
+);
+
+// 真模型常驻占 ~250 MB：测试收尾必须杀掉它，否则开发机上会留一个孤儿 node 进程。
+disposeLocalWorker();
+check("disposeLocalWorker 之后进程没了", localWorkerStatus().state === "stopped");
 
 rmSync(outDir, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
