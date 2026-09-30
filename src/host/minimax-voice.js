@@ -28,10 +28,12 @@
  *   · `GET|POST /herta-minimax-state` —— 状态快照；POST
  *     `{action:"adopt"|"reset"|"preview"|"warm"}`
  *
- * ## 三个引擎值分别是谁在说话（`speaksFor` 是唯一判据）
+ * ## 四个引擎值分别是谁在说话（`speaksFor` 是唯一判据）
  *
  *   · `minimax` —— 云端优先；云端不可用时**显式回落本地模型**，理由记进 `engineNote`；
  *   · `local`   —— 直接本地合成（2026-09-28 起真的会念；在此之前这一档只在回落里被调用）；
+ *   · `fish`    —— Fish Audio 云端（`fish-tts.js`）。**失败不回落** —— 用户明确选了
+ *                  这一档，换成别的声音比没声音更糟，所以只写理由、不出声；
  *   · `mimo`    —— 合成器尚未接线（`mimo-tts.js` 全仓零调用点），不发声，理由照写。
  *
  * 本地那两条（`local`，以及 `minimax` 不可用时的回落）都走**常驻合成进程**：
@@ -69,7 +71,7 @@ const PLAN_KEY_REF = "MINIMAX_PLAN_API_KEY";
  * 选中 `mimo` 时给用户看的原因（设置页那一行、`herta_say`、试听共用一句）。
  *
  * 写这一句而不是静默返回 null：`mimo` 这一档在选择器里是**点得动**的
- * （用户决策：保留三档 + 逐档标注），所以"选了没声音"必须当场有解释 ——
+ * （用户决策：保留全部档位 + 逐档标注），所以"选了没声音"必须当场有解释 ——
  * 否则它与"密钥没填"、"模型没下"在界面上长得一模一样。
  */
 const MIMO_NOT_WIRED = "MiMo 合成器尚未接线（mimo-tts.js 还没有调用点），不会发声";
@@ -342,6 +344,40 @@ function ensureShared(ctx) {
       mini.noteState();
       return null;
     }
+
+
+
+    // ───── [herta-fish-engine] BEGIN ─────
+    // Fish Audio（云端）—— 失败就报错不出声，**不静默回落**：
+    // 用户明确选了这一档，换成别的声音比没声音更糟。
+    if (engine === "fish") {
+      try {
+        const fish = await import("./fish-tts.js");
+        // 设置页那几个 fish* 字段优先；没设过的传 undefined，
+        // 由 fish-tts.js 回退到 fish_config.json 里的值。
+        const num = (name) => {
+          const v = liveValue(mini.config?.[name]);
+          return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+        };
+        const r = await fish.trySynthesizePcm(req.text, {
+          fishRef: readStringField(mini.config, "fishRef", undefined),
+          fishSpeed: num("fishSpeed"),
+          fishEffect: readBoolField(mini.config, "fishEffect", undefined),
+          fishPreset: readStringField(mini.config, "fishPreset", undefined),
+        });
+        if (r !== null) {
+          mini.engineNote = null;
+          return { ...r, engine: "fish" };
+        }
+      } catch (err) {
+        log(`Fish 合成抛错：${String(err?.message ?? err)}`);
+      }
+      mini.engineNote = "Fish Audio 不可用（看宿主日志，或设置页「Fish 语音」那一组）";
+      mini.noteState();
+      return null;
+    }
+    // ───── [herta-fish-engine] END ─────
+
     if (engine === "local") {
       mini.engineNote = null;
       const local = await localQueue(req.text);

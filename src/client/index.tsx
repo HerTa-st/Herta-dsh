@@ -1722,7 +1722,8 @@ const ENUM_LABELS = {
   locale: { "": "跟随系统", zh: "中文", en: "English" },
   interactionLanguage: { follow: "跟随界面", zh: "中文", en: "English" },
   theme: { system: "跟随系统", light: "浅色", dark: "深色" },
-  voiceEngine: { local: "本地模型", minimax: "MiniMax 克隆", mimo: "MiMo 合成" },
+  voiceEngine: { local: "本地模型", minimax: "MiniMax 克隆", fish: "Fish Audio 克隆", mimo: "MiMo 合成" },
+  fishPreset: { terminal_textured: "带噪声", terminal: "纯净" },
   backendThinking: { low: "low", high: "high", max: "max" },
   backendContract: { standard: "standard", minimal: "minimal" },
   modelsActor: { "deepseek-v4-pro": "V4 Pro", "deepseek-flash": "V4.1 Flash" },
@@ -1747,6 +1748,10 @@ const FIELD_HINTS = {
   realtimeVoice: "「自动念回复」的总开关。关掉就不再自动把回复送去合成（不再花钱）；herta_say 与「试听」不受它管。",
   voiceMuted: "关掉她所有的语音播放。立刻生效。",
   voiceVolume: "语音播放的音量（0–100）。立刻生效。",
+  fishRef: "fish.audio 上的音色模型 ID。默认是大黑塔；换成别的角色只要改这一行。",
+  fishSpeed: "语速。1 是模型原始速度。",
+  fishEffect: "信道音效：400Hz–5.5kHz 带通 + 饱和，更像游戏里透过终端说话。关掉就是 Fish 原声。",
+  fishPreset: "terminal_textured 多一层跟着语音走的噪声；terminal 是同一套滤波但不加噪声。",
   workspace: "整机的工作区根目录（绝对路径）。",
   dreamEnabled: "她空闲时自己写废案。",
   backendThinking: "板砖的推理档位。",
@@ -1758,9 +1763,13 @@ const FIELD_HINTS = {
 /**
  * 逐档的**现状**（是行为，不是偏好）—— 引擎行按当前选中值显示那一句。
  *
- * 三档里只有两档会真的出声：`local` 直连本地模型、`minimax` 云端优先（失败回落
- * 本地）。`mimo` 的合成器**还没有调用点**，选它不会发声 —— 这一句必须写出来，
- * 而不是把选项藏起来（用户决策：保留三档 + 逐档标注）。
+ * 四档里三档会真的出声：`local` 直连本地模型、`minimax` 云端优先（失败回落
+ * 本地）、`fish` 走 Fish Audio 云端。`mimo` 的合成器**还没有调用点**，选它不会
+ * 发声 —— 这一句必须写出来，而不是把选项藏起来（用户决策：保留全部档位 + 逐档标注）。
+ *
+ * `fish` 与 `minimax` 的区别在**失败时的行为**：`minimax` 失败会静默回落本地，
+ * `fish` 失败**不回落**（用户明确选了这一档，换成别的声音比没声音更糟）——
+ * 理由进 `engineNote`，用户看得见。
  *
  * 本地那一档的代价写在第二句里，数字是 2026-09-28 在本机直接跑 worker 量的：
  *   · **冷启动**（加载 addon + 85 MB 模型）2.7–4.4 s，其中模型加载 2.6–3.7 s；
@@ -1774,6 +1783,8 @@ const ENGINE_NOTES: Record<string, string> = {
     "离线合成：不花钱、不需要网络。合成进程会常驻（切到这一档就先预热），热起来后每句只付推理；首次、或空闲回收之后，要重新加载模型约 3 秒。",
   minimax:
     "云端合成：边写边念。云端不可用（没密钥 / 没认领到克隆 / 被拒绝）时自动回落本地模型，回落原因写在下面「MiniMax 语音」那一行。",
+  fish:
+    "云端合成（Fish Audio）：44.1kHz，音色是站上训练好的大黑塔角色模型。需要联网，台词会传到 fish.audio；参数在下面「Fish 语音」那一组里调。",
   mimo: "合成器尚未接线（宿主侧 mimo-tts.js 还没有调用点），选它不会发声。",
 };
 
@@ -1783,6 +1794,65 @@ function engineLabel(engine: unknown): string {
   const labels = (ENUM_LABELS as Record<string, Record<string, string>>).voiceEngine ?? {};
   return labels[value] ?? value;
 }
+
+/**
+ * 语音引擎那一行的**结构化文案**。
+ *
+ * ## 为什么不再用段落
+ *
+ * 原来这一行是三段散文（提示 31 字 + 引擎说明 69~84 字 + 本地状态 55 字），
+ * 堆在卡片左半边那一列里（宽约 550px）—— 结果折成 4~6 行，**堆成一条竖向长条**，
+ * 右边控件下方留一大片空白，整行高度还跟别的设置行对不齐。
+ *
+ * 改法：
+ *   · `badges`  —— 3 个短标签，一行扫完，替代那段 84 字的说明；
+ *   · `summary` —— 一句不长于一行的话，补充标签装不下的语义；
+ *   · `facts`   —— 「标签 / 值」小格，展开后**整宽三列**排开，不再是横贯长句。
+ *
+ * 文案自己也要短。第一版 `fish` 那档写了 84 字，是当时最长的一条，
+ * **那是这段 UI 变难看的直接原因**。
+ */
+const ENGINE_BADGES: Record<string, string[]> = {
+  local: ["离线", "无需联网", "零成本"],
+  minimax: ["云端", "边写边念", "失败回落"],
+  fish: ["云端", "44.1kHz", "需联网"],
+  mimo: ["未接线", "不发声"],
+};
+
+const ENGINE_SUMMARY: Record<string, string> = {
+  local: "在本机跑，合成进程常驻，热起来后比播放还快。",
+  minimax: "MiniMax 合成；不可用时自动回落本地模型，原因写在下面。",
+  fish: "Fish Audio 合成，音色是站上训练好的角色模型。",
+  mimo: "宿主侧还没有调用点，选它不会出声。",
+};
+
+const ENGINE_FACTS: Record<string, [string, string][]> = {
+  local: [
+    ["需要网络", "否"],
+    ["采样率", "24 kHz"],
+    ["音色来源", "模型内置（不可换）"],
+    ["开销", "零成本"],
+  ],
+  minimax: [
+    ["需要网络", "是"],
+    ["失败时", "回落本地模型"],
+    ["需要密钥", "MINIMAX_API_KEY"],
+    ["克隆音色", "需套餐"],
+  ],
+  fish: [
+    ["需要网络", "是"],
+    ["采样率", "44.1 kHz"],
+    ["台词上传", "传到 fish.audio"],
+    ["音色来源", "站上训练的角色模型"],
+    ["可换音色", "是"],
+    ["参数位置", "下面「Fish 语音」组"],
+  ],
+  mimo: [
+    ["需要网络", "—"],
+    ["状态", "合成器未接线"],
+    ["能否发声", "否"],
+  ],
+};
 
 /** 选择器要用的空数组常量：引用必须稳定，否则 useSyncExternalStore 会自激。 */
 const EMPTY_WORKSPACES = Object.freeze([]);
@@ -2229,6 +2299,8 @@ function createSettingsSection(ui: unknown) {
     const [mini, setMini] = useState<Record<string, unknown> | null>(miniMaxState);
     const [busy, setBusy] = useState(false);
     const [result, setResult] = useState<string | null>(null);
+    /** 「详情」展开与否。默认收起 —— 这一行的高度不该由最长的那段文案决定。 */
+    const [detailOpen, setDetailOpen] = useState(false);
 
     useEffect(() => {
       const sub = (next: unknown): void => {
@@ -2301,36 +2373,86 @@ function createSettingsSection(ui: unknown) {
       });
     };
 
-    return createElement(
-      "div",
-      { style: ROW_STYLE },
+    /**
+     * 一行里的窄元素：小标签（徽章）。
+     *
+     * 用 `inline-block` + 圆角，视觉上跟按钮区分开（按钮有边框，徽章只有底色）。
+     */
+    const badge = (text: string, i: number): unknown =>
       createElement(
-        "div",
-        { style: { flex: "1 1 auto", minWidth: 0 } },
-        createElement("div", { style: LABEL_STYLE }, FIELDS.voiceEngine.label),
-        createElement("div", { style: HINT_STYLE }, FIELD_HINTS.voiceEngine),
-        createElement("div", { style: HINT_STYLE }, ENGINE_NOTES[engine] ?? ""),
-        // 本地就绪**常显**：minimax 那档也会在云端不可用时回落到本地模型，
-        // 所以"本地模型装没装、运行时探测过没有、合成进程热没热"对两个档位都是有用的事实。
+        "span",
+        {
+          key: `b${i}`,
+          style: {
+            display: "inline-block",
+            padding: "1px 8px",
+            borderRadius: 9,
+            fontSize: 11,
+            lineHeight: "17px",
+            background: "var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.14))",
+            color: "var(--dsw-alias-label-secondary)",
+            whiteSpace: "nowrap",
+          },
+        },
+        text,
+      );
+
+    /** 展开后的「标签 / 值」小格。整宽三列 —— 不是横贯的长句。 */
+    const facts = [
+      ...(ENGINE_FACTS[engine] ?? []),
+      // 本机事实：两个云端档也会回落本地，所以这几项对它们同样有用。
+      ["本地模型", phaseText] as [string, string],
+      ["运行时", runtimeReady ? "可用" : "缺失"] as [string, string],
+      ["合成进程", workerText] as [string, string],
+    ];
+
+    const factGrid = createElement(
+      "div",
+      {
+        style: {
+          marginTop: 10,
+          padding: "10px 12px",
+          borderRadius: 8,
+          background: "var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.08))",
+          display: "grid",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          columnGap: 16,
+          rowGap: 10,
+        },
+      },
+      ...facts.map(([k, v], i) =>
         createElement(
           "div",
-          { style: HINT_STYLE },
-          `本地模型：${phaseText}　·　运行时：${runtimeReady ? "可用" : "缺失或未探测通过"}`
-            + `　·　合成进程：${workerText}`
-            + (phase === "absent" || phase === "failed" ? "（在「整机动作 › 本地语音模型」里下载）" : ""),
+          { key: `f${i}`, style: { minWidth: 0 } },
+          createElement(
+            "div",
+            { style: { fontSize: 11, lineHeight: "16px", color: "var(--dsw-alias-label-secondary)" } },
+            k,
+          ),
+          createElement(
+            "div",
+            { style: { fontSize: 12, lineHeight: "18px", color: "var(--dsw-alias-label-primary)", wordBreak: "break-word" } },
+            v,
+          ),
         ),
-        props.muted
-          ? createElement(
-              "div",
-              { style: { ...HINT_STYLE, color: "var(--dsw-alias-label-warning, #b7791f)" } },
-              "当前是静音，试听不会出声。",
-            )
-          : null,
-        result === null ? null : createElement("div", { style: HINT_STYLE }, result),
       ),
+    );
+
+    return createElement(
+      "div",
+      // 整行改成**纵向三段**，不再「左文字 | 右控件」两列 —— 文字因此拿到整宽，
+      // 同样的字数从 6 行降到 1~2 行，右侧控件下方也不会再留空白。
+      { style: { display: "block" } },
+
+      // ── ① 标题 + 控件（同一行，垂直居中对齐） ──
       createElement(
         "div",
-        { style: { flex: "0 0 auto", display: "grid", gap: 6, justifyItems: "end" } },
+        { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+        createElement(
+          "div",
+          { style: { ...LABEL_STYLE, flex: "1 1 auto", minWidth: 0 } },
+          FIELDS.voiceEngine.label,
+        ),
         createElement(EnumControl, {
           field: "voiceEngine",
           value: props.value,
@@ -2360,6 +2482,53 @@ function createSettingsSection(ui: unknown) {
             )
           : null,
       ),
+
+      // ── ② 徽章摘要 + 「详情」开关（整宽一行） ──
+      createElement(
+        "div",
+        {
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flexWrap: "wrap",
+            marginTop: 8,
+            paddingTop: 8,
+            borderTop: "1px solid var(--dsw-alias-border-l)",
+          },
+        },
+        ...(ENGINE_BADGES[engine] ?? []).map(badge),
+        createElement(
+          "span",
+          { style: { ...HINT_STYLE, marginTop: 0, flex: "1 1 auto", minWidth: 0 } },
+          ENGINE_SUMMARY[engine] ?? "",
+        ),
+        createElement(
+          "button",
+          {
+            type: "button",
+            style: {
+              ...ACTION_BUTTON_STYLE,
+              padding: "2px 8px",
+              fontSize: 12,
+            },
+            onClick: () => setDetailOpen((v: boolean) => !v),
+          },
+          detailOpen ? "收起详情" : "详情",
+        ),
+      ),
+
+      // ── ③ 展开后的事实网格 ──
+      detailOpen ? factGrid : null,
+
+      props.muted
+        ? createElement(
+            "div",
+            { style: { ...HINT_STYLE, color: "var(--dsw-alias-label-warning, #b7791f)" } },
+            "当前是静音，试听不会出声。",
+          )
+        : null,
+      result === null ? null : createElement("div", { style: HINT_STYLE }, result),
     );
   }
 
@@ -2543,8 +2712,20 @@ function createSettingsSection(ui: unknown) {
     );
   }
 
-  /** 路径输入：本地暂存草稿，失焦或回车才写（逐键写会把 profile 补丁刷爆）。 */
-  function WorkspaceInput(props: { value: string; disabled?: boolean; onCommit: (next: string) => void; useWorkspaces: any }): unknown {
+  /**
+   * 路径 / 文本输入：本地暂存草稿，失焦或回车才写（逐键写会把 profile 补丁刷爆）。
+   *
+   * `placeholder` 由字段表给（`kind: "text"` 的字段各写各的）；
+   * `useWorkspaces` **只在 `kind: "path"` 时传进来** —— 「音色模型 ID」这种
+   * 纯文本字段不该看到「从 DSH 已登记的工作区里选」那一块。
+   */
+  function WorkspaceInput(props: {
+    value: string;
+    disabled?: boolean;
+    onCommit: (next: string) => void;
+    placeholder?: string;
+    useWorkspaces: any;
+  }): unknown {
     const [draft, setDraft] = useState(props.value);
     useEffect(() => {
       // 外部值变了（例如从下面的建议里选了）就同步草稿。
@@ -2558,7 +2739,7 @@ function createSettingsSection(ui: unknown) {
         value: draft,
         disabled: props.disabled === true,
         spellCheck: false,
-        placeholder: "例如 D:\\项目\\我的仓库",
+        placeholder: props.placeholder ?? "例如 D:\\项目\\我的仓库",
         style: INPUT_STYLE,
         onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
         onKeyDown: (event: { key: string }) => {
@@ -2657,7 +2838,10 @@ function createSettingsSection(ui: unknown) {
           value: typeof value === "string" ? value : "",
           disabled,
           onCommit: (next: string) => setField(field, next),
-          useWorkspaces: props.useWorkspaces,
+          // `kind: "text"` 用字段自己的占位符；其余（`path`）保持原样。
+          placeholder: typeof spec.placeholder === "string" ? spec.placeholder : undefined,
+          // 只有路径字段才给工作区选择器 —— 模型 ID 那一类看了会莫名其妙。
+          useWorkspaces: spec.kind === "path" ? props.useWorkspaces : undefined,
         });
       }
       return createElement(Row, {

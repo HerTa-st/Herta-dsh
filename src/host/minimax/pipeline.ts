@@ -28,6 +28,8 @@ export const MAX_TURN_CHARS = 800;
  *     `synthUnit` 里，理由记进 `engineNote` 给用户看）；
  *   · `local`   —— 直接本地合成。2026-09-28 起这一档真的会念（在这之前它只在
  *     上面那条回落里被调用，"选本地模型"等于静音）；
+ *   · `fish`    —— 走 Fish Audio 云端（`fish-tts.js`）。**失败不回落**：用户明确
+ *     选了这一档，换成别的声音比没声音更糟 —— 理由进 `engineNote` 给用户看；
  *   · `mimo`    —— 合成器尚未接线（`mimo-tts.js` 全仓零调用点），不发声。
  *
  * 判据放在这里，而不是在宿主与工具里各写一遍：`onStream` 与 `sayText` 两道闸门、
@@ -37,7 +39,8 @@ export const MAX_TURN_CHARS = 800;
  * @returns 这个引擎是否会把音频推出来。
  */
 export function speaksFor(engine: string): boolean {
-  return engine === "minimax" || engine === "local";
+  // [herta-fish-engine] Fish 也算会说话的引擎
+  return engine === "minimax" || engine === "local" || engine === "fish";
 }
 
 /** 一个单元合成出来的东西（宿主注入的 `synthUnit` 的返回形状）。 */
