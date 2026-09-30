@@ -43,26 +43,46 @@ for (const name of seedFiles) {
 }
 
 console.log("\n=== 反向：必须拦住的用例 ===");
+// 第三列是**机器码**（`code`），不是措辞 —— 2026-09-30 起门会同时给 code 与中文 reason，
+// 断言盯 code，以后改措辞不会再碰坏这份测试。
 const cases = [
   ["空文件", "   \n\n  ", "empty"],
-  ["没有废案/记录头", "这是一段普通文字，不是她的稿子。", "header"],
-  ["未闭合的栅栏", "### 废案_99：测试\n\n（我 说）\n说的话没有关。", "unbalanced"],
-  ["多余的关闭", "### 废案_99：测试\n\n（/我 说）\n关了个没开的。", "stray close"],
-  ["嵌套开启", "### 废案_99：测试\n\n（我 说）\n（我 想）\n", "nested"],
+  ["没有废案/记录头", "这是一段普通文字，不是她的稿子。", "no-header"],
+  ["未闭合的栅栏", "### 废案_99：测试\n\n（我 说）\n说的话没有关。", "fence"],
+  ["多余的关闭", "### 废案_99：测试\n\n（/我 说）\n关了个没开的。", "fence"],
+  ["嵌套开启", "### 废案_99：测试\n\n（我 说）\n（我 想）\n", "fence"],
   ["结尾截断的栅栏", "### 废案_99：测试\n\n（我 说）\n好的。（/我 说）\n（我 ", "truncated"],
-  ["说话人不匹配", "### 废案_99：测试\n\n（我 说）\n话。（/开拓者 说）", "does not match"],
+  ["说话人不匹配", "### 废案_99：测试\n\n（我 说）\n话。（/开拓者 说）", "fence"],
 ];
 for (const [label, content, expect] of cases) {
   const r = checkFewShot("test.txt", content);
-  const hit = r.ok === false && String(r.reason).includes(expect);
-  ok(hit, label, r.ok ? "竟然通过了" : `原因=${r.reason}`);
+  ok(r.ok === false && r.code === expect, label, r.ok ? "竟然通过了" : `code=${r.code} 原因=${r.reason}`);
+}
+
+console.log("\n=== 拒绝理由必须是「给人看的中文」且有机器码 ===");
+for (const [label, content] of cases) {
+  const r = checkFewShot("test.txt", content);
+  if (r.ok) continue;
+  ok(typeof r.code === "string" && r.code !== "", `${label}：有 code`);
+  // 英文机器话（"unbalanced fences" / "body has no … header" / "too long (…)"）不许再出现
+  ok(
+    !/[a-z]{4,}\s+[a-z]{4,}/i.test(r.reason) || /token/.test(r.reason),
+    `${label}：理由里没有成串的英文机器话`,
+    `reason=${r.reason}`,
+  );
+  // 理由本身不该含一个**合法**栅栏（否则回喂给模型会把它自己绕进去）
+  ok(
+    !/（(\/?)([^（）/\n]{1,16}) (说|想)）/.test(r.reason),
+    `${label}：理由里没有自带一个合法栅栏`,
+    `reason=${r.reason}`,
+  );
 }
 
 // 超长：非 ASCII 每字符约 1 token，所以 12000 个汉字必然超上限
 {
   const big = `### 废案_99：超长\n\n${"黑".repeat(12_000)}`;
   const r = checkFewShot("big.txt", big);
-  ok(r.ok === false && String(r.reason).includes("too long"), "超长文件（约 12000 汉字）", r.ok ? "竟然通过了" : r.reason);
+  ok(r.ok === false && r.code === "too-long", "超长文件（约 12000 汉字）", r.ok ? "竟然通过了" : r.reason);
 }
 
 // 零宽字符夹带：把栅栏拆开，靠零宽字符在提示词里重新拼起来
