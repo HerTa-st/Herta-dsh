@@ -72,6 +72,22 @@ export const narrativeListTool = defineTool({
             properties: { name: { type: "string" }, reason: { type: "string" } },
           },
         },
+        /**
+         * **必须声明**：输出形状是 `additionalProperties: false`，返回值里多一个字段
+         * 就会让整次调用报「returned invalid output」—— 2026-09-30 我真踩了这一步：
+         * 渲染那边加了落选项，`execute` 也跟着返回 `skipped`，却忘了在这里声明，
+         * 于是这个工具**每次都失败**（不是显示问题，是彻底不能用）。
+         * 教训：加返回字段时，**形状声明与返回值要一起改**。
+         */
+        skipped: {
+          type: "array",
+          description: "因预算不够而**没进**本次提示词的那几份（按需仍可读，但这一轮她看不见）。",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { name: { type: "string" }, tokens: { type: "number" } },
+          },
+        },
         promptTokens: { type: "number", description: "进入提示词的合计估算 token。" },
         budgetTokens: { type: "number", description: "当前预算上限。" },
       },
