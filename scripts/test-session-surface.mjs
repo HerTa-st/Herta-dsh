@@ -7,7 +7,7 @@
  *
  * 用法：node scripts/test-session-surface.mjs
  */
-import { pickCandidate, pickCurrentTurn, pickRecent } from "../src/host/session-surface.js";
+import { isSubagentAgent, pickCandidate, pickCurrentTurn, pickRecent } from "../src/host/session-surface.js";
 
 let pass = 0;
 let fail = 0;
@@ -206,6 +206,36 @@ ok(pickCurrentTurn({ nodes: null, eventAt: () => undefined }) === null, "nodes �
     },
   });
   ok(got === 7, "eventAt 抛错时跳过该 seq 继续往前");
+}
+
+console.log("\n=== isSubagentAgent：叙述层该对谁说话（2026-09-30 实测形状）===");
+{
+  // 本机实测：子代理的会话头是 { parentSession, origin: "subagent", delegationDepth: 1 }
+  const sub = { session: { header: { id: "x", parentSession: "p", origin: "subagent", delegationDepth: 1, agentPreset: "herta" } } };
+  ok(isSubagentAgent(sub) === true, "origin=subagent → 是子代理");
+  ok(
+    isSubagentAgent({ session: { header: { origin: "subagent" } } }) === true,
+    "只凭 origin 也认得（delegationDepth 缺失）",
+  );
+  ok(
+    isSubagentAgent({ session: { header: { delegationDepth: 1 } } }) === true,
+    "只凭 delegationDepth>0 也认得（origin 缺失的老格式）",
+  );
+  const host = { session: { header: { id: "x", isSeeded: false, delegationDepth: 0, agentPreset: "herta" } } };
+  ok(isSubagentAgent(host) === false, "人机会话（delegationDepth 0、无 origin）→ 不是子代理");
+  ok(isSubagentAgent({ session: { header: {} } }) === false, "两个字段都读不到 → 当人机（默认服务她）");
+  ok(isSubagentAgent({ session: {} }) === false, "没有 header → false");
+  ok(isSubagentAgent({}) === false, "空 agent → false");
+  ok(isSubagentAgent(null) === false, "null → false");
+  ok(isSubagentAgent(undefined) === false, "undefined → false");
+  ok(
+    isSubagentAgent({ session: { header: { origin: "main", delegationDepth: 0 } } }) === false,
+    "显式 origin=main → false",
+  );
+  ok(
+    isSubagentAgent({ session: { header: { delegationDepth: "1" } } }) === false,
+    "delegationDepth 是字符串 → 不认（不隐式转型）",
+  );
 }
 
 console.log(`\n=== 结果：${pass} 通过 / ${fail} 失败 ===`);
