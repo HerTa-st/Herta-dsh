@@ -24,9 +24,11 @@ node_modules/
 Thumbs.db
 # `scripts/reapply-surface-fix.mjs` 改产物前会就近留一份，属于本地退路，不进仓库。
 *.bak-surface-fix
+# 同理：`reapply-fish-proxy-field.mjs` / `reapply-ux-texts.mjs` 的备份。
+*.bak-fish-proxy
+*.bak-ux-texts
 
 # ── 测试落地的音频样本 ───────────────────────────────────────────────────
 # test-minimax-live.mjs / say-minimax-wav.mjs 会把合成结果写到仓库根目录，
 # 只用于人耳验收（听一遍确认不是静音），不是交付物。
 _minimax-*.wav
-*.bak-fish-proxy

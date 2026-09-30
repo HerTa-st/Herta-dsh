@@ -168,6 +168,13 @@ export function createSpeechPipeline(opts: SpeechPipelineOptions) {
   let agentSeq = 0;
   let saySeq = 0;
   let cappedUtterances = 0;
+  /**
+   * 最近一次「撞到上限」的事实（`null` = 还没撞过）。
+   *
+   * 为什么要留下它而不是只留一个计数：计数只能说「发生过几次」，用户看到的是
+   * 「她说了一半停了」——他需要知道的是**这一轮念了多少、上限是多少**。
+   */
+  let lastCap: { at: string; spokenChars: number; limit: number } | null = null;
   let ignoredFrames = 0;
   /** 被 `realtimeVoice` 关掉而没念的帧数（诊断用：能区分"关了"与"坏了"）。 */
   let mutedFrames = 0;
@@ -231,6 +238,10 @@ export function createSpeechPipeline(opts: SpeechPipelineOptions) {
     if (utt.chars + text.length > maxTurnChars) {
       utt.capped = true;
       cappedUtterances += 1;
+      // 2026-09-30：以前这里只写日志 + 一个累计计数，用户那边**看不出来发生了什么**，
+      // 只感觉「她说了一半停了」。现在把「上限多少、念了多少」也放进状态里，
+      // 客户端那一行才能说一句人话。
+      lastCap = { at: new Date().toISOString(), spokenChars: utt.chars, limit: maxTurnChars };
       log(`本轮语音已到上限（${maxTurnChars} 字）：后面的内容只显示不发声`);
       noteState();
       return Promise.resolve(null);
@@ -387,7 +398,13 @@ export function createSpeechPipeline(opts: SpeechPipelineOptions) {
     },
 
     stats() {
-      return { cappedUtterances, ignoredFrames, mutedFrames, utterances: utteranceSeq };
+      return {
+        cappedUtterances,
+        lastCap: lastCap === null ? null : { ...lastCap },
+        ignoredFrames,
+        mutedFrames,
+        utterances: utteranceSeq,
+      };
     },
   };
 }

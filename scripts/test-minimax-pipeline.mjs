@@ -253,6 +253,19 @@ const stopFrames = (bus) => bus.frames.filter((f) => f.kind === "ttsStop");
   check("到上限后不再发声", spoken <= 12);
   check("上限触发被记数", pipeline.stats().cappedUtterances === 1);
   check("上限触发让状态可见（noteState 被调）", notes.length >= 1);
+  // 2026-09-30 补：光有计数，用户那边只看得到「发生过几次」；他需要知道的是
+  // 「这一轮念了多少、上限是多少」—— 客户端那一行靠这几个数说人话。
+  //
+  // 这个用例的 `maxTurnChars` 是 12，而第一个单元本身就超了 —— 所以
+  // `spokenChars` **就是 0**（一个字都没念就撞上限），这正是「她说了一半停了」
+  // 的最极端形态。断言如实钉住它，而不是要求一个不可能出现的正数。
+  const cap = pipeline.stats().lastCap;
+  check(
+    "上限触发记下了「念了多少 / 上限多少」",
+    cap !== null && cap.limit === 12 && cap.spokenChars === 0 && typeof cap.at === "string",
+    JSON.stringify(cap),
+  );
+  check("没撞过上限时 lastCap 是 null", makePipeline({}).pipeline.stats().lastCap === null);
 }
 
 // ── 8b. realtimeVoice=false：自动念回复关掉，但 herta_say 仍能说 ──────────
