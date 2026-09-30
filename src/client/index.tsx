@@ -48,7 +48,7 @@ import { SETTINGS_GROUPS } from "../host/settings-groups.js";
 // 播放队列状态机。**零 import** 是刻意的 —— 它能被 Node 直接单测
 // （`scripts/test-minimax-pcm.mjs`），所以「顺序 / 去重 / 打断 / 停止」这些最容易
 // 写错的地方不靠浏览器验证。
-import { createPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
+import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
 
 /** Cordis 插件名，与 cordis.patch.yml 里的 loader 条目 id 一致。 */
 const name = "herta";
@@ -513,6 +513,14 @@ let voiceAudio: { ctx: AudioContext; gain: GainNode } | null = null;
 const voiceSources = new Map<string, Set<AudioBufferSourceNode>>();
 /** 每条 utterance 下一次该排在哪（同一句的多段首尾相接，不叠声）。 */
 const voiceCursor = new Map<string, number>();
+/**
+ * **[点哪段读哪段]** 全部音频共用的一个游标。
+ *
+ * 上面那个 `voiceCursor` 是**按 utterance** 存的，跨不过条：新一条 utterance
+ * 拿不到前一条的结束时刻，于是 `at = currentTime` —— 直接盖在还在说的那段上面，
+ * 听起来就是「同时念两段话」。全局游标把这件事收成一条时间轴，谁也盖不住谁。
+ */
+let voiceEndAt = 0;
 /** 游标表的上界。只防内存（一页开着跑一整天）：过线整体清掉，旧游标不再需要。 */
 const VOICE_CURSOR_LIMIT = 64;
 /** 已经申请过「用户一动手就 resume」的监听。 */
@@ -621,9 +629,12 @@ function stopLocalVoice(utteranceId?: string): void {
     voiceSources.delete(id);
     voiceCursor.delete(id);
   }
+  // 一条都不剩了：全局游标归零 —— 下一个到达的该**立刻**出声，
+  // 而不是排在一个已经不存在的时间点上。
+  if (voiceSources.size === 0) voiceEndAt = 0;
 }
 
-/** 一条 PCM 交给 WebAudio：调度到 `max(now, 该 utterance 的游标)`，首尾相接。 */
+/** 一条 PCM 交给 WebAudio：调度到 `max(now, 全局游标)` —— 所有音频首尾相接，不叠声。 */
 function playLocalVoice(
   utteranceId: string,
   seq: number,
@@ -646,7 +657,7 @@ function playLocalVoice(
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(voiceAudio!.gain);
-    const at = Math.max(ctx.currentTime, voiceCursor.get(utteranceId) ?? 0);
+    const at = Math.max(ctx.currentTime, voiceEndAt);
     let set = voiceSources.get(utteranceId);
     if (set === undefined) {
       set = new Set();
@@ -670,6 +681,7 @@ function playLocalVoice(
     source.start(at);
     if (!voiceCursor.has(utteranceId) && voiceCursor.size >= VOICE_CURSOR_LIMIT) voiceCursor.clear();
     voiceCursor.set(utteranceId, at + buffer.duration);
+    voiceEndAt = at + buffer.duration;
     markMinimax("minimaxAudioPlays", ((globalThis.__DSH_HERTA__?.minimaxAudioPlays as number) ?? 0) + 1);
     markMinimax("minimaxAudioLast", `#${samples.length}/${sampleRate}Hz`);
     // `onended` 在某些情况下可能不来（上下文被回收、调度被掐），到点强制推进队列，
@@ -687,11 +699,7 @@ function playLocalVoice(
  *
  * 只在**没有 iframe** 的时候真的被推东西；有 iframe 时它一个单元都不会收到。
  */
-const localQueue = createPlaybackQueue<{
-  samples: Int16Array;
-  sampleRate: number;
-  durationMs: number;
-}>({
+const localQueue = createSerialPlaybackQueue({
   onPlay: (item) => {
     playLocalVoice(
       item.utteranceId,
@@ -702,7 +710,10 @@ const localQueue = createPlaybackQueue<{
     );
   },
   onStop: (id) => {
-    stopLocalVoice(id);
+    // 空 id = 「什么都别响了」。需要这条分支，是因为命中档案的那一段是**直接
+    // 送喇叭**的，从没经过队列，队列叫不出它的名字。
+    if (id === "") stopLocalVoice();
+    else stopLocalVoice(id);
   },
 });
 
@@ -718,6 +729,8 @@ function onMiniMaxPcm(frame: {
   samplesB64?: unknown;
   sampleRate?: unknown;
   durationMs?: unknown;
+  /** 合成这段音频用的**那一段文字**（宿主一直在推，只是以前没人用）。 */
+  text?: unknown;
 }): void {
   const utteranceId = typeof frame.utteranceId === "string" ? frame.utteranceId : "";
   const seq = typeof frame.seq === "number" ? frame.seq : 0;
@@ -735,6 +748,21 @@ function onMiniMaxPcm(frame: {
     return;
   }
   markMinimax("minimaxLastFrame", `${utteranceId}#${seq} ${samples.length} samples`);
+
+  // [点哪段读哪段] 先按**它自己的文字**归档，再决定往哪放。
+  // 放在这里而不是下面：整机视图那条路绕过 localQueue 直接推 iframe，
+  // 但它同样该进档案 —— 档案是两条路共用的。
+  rememberSpokenAudio(frame.text, samples, sampleRate, durationMs);
+  // [点哪段读哪段] 这一帧来自**我们**发出去的某次 say 请求：按当时报上去的那段
+  // 文字归档 —— 那正是下一次点击会递上来的钥匙。可能有好几笔请求同时在飞，
+  // 所以整张表都要比一遍。
+  for (const [token, askedText] of awaitingSpokenTexts) {
+    if (utteranceId.indexOf(token) >= 0) {
+      rememberSpokenAudio(askedText, samples, sampleRate, durationMs);
+      awaitingSpokenTexts.delete(token);
+      break;
+    }
+  }
 
   // 甲方案（有 iframe）：只推给它。**不**自己再放一遍 —— 那就是双声。
   // 形状逐字是 `{ kind:"tts", utteranceId, seq, samples, sampleRate, durationMs }`，
@@ -785,13 +813,21 @@ async function refreshMiniMax(): Promise<Record<string, unknown> | null> {
   return miniMaxState;
 }
 
-/** 发一个动作（目前只有 adopt = 重新认领），把宿主回的快照回填。 */
-async function postMiniMaxAction(action: string): Promise<Record<string, unknown> | null> {
+/**
+ * 发一个动作，把宿主回的快照回填。
+ *
+ * `extra` 是给 `say` 用的 —— 那一个动作要带正文（点的是哪段，就送哪段）。
+ * 其余动作（adopt / reset / preview / warm）不带负载，行为不变。
+ */
+async function postMiniMaxAction(
+  action: string,
+  extra?: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
   try {
     const res = await fetch(MINIMAX_STATE_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action, ...(extra ?? {}) }),
     });
     if (res.ok) miniMaxState = (await res.json()) as Record<string, unknown>;
     else markMinimax("minimaxActionError", `${action} → HTTP ${res.status}`);
@@ -1022,6 +1058,15 @@ function ensureShadowMount(host: HTMLElement): HTMLElement {
     style.textContent = hertaCss;
     shadow.append(style);
   }
+  // [点哪段读哪段] 可点的是**气泡自己的盒子**，不是它所在的那一整行。
+  // 写进 CSS 是为了让指针和判定说同一件事 —— 否则鼠标在空白处伸出手，
+  // 点下去却被处理器拒绝。
+  if (shadow.querySelector("style[data-herta-click]") === null) {
+    const clickStyle = document.createElement("style");
+    clickStyle.setAttribute("data-herta-click", "");
+    clickStyle.textContent = ".message-bubble,.code-standalone{cursor:pointer}";
+    shadow.append(clickStyle);
+  }
   const existing = shadow.querySelector("[data-herta-mount]");
   if (existing instanceof HTMLElement) return existing;
   const mount = document.createElement("div");
@@ -1030,22 +1075,154 @@ function ensureShadowMount(host: HTMLElement): HTMLElement {
   return mount;
 }
 
-/** 把所有气泡渲染成 Herta 的组件树。 */
+/**
+ * 「点哪段，读哪段」—— 唯一由**人**发起的打断入口。
+ *
+ * 两件事，顺序不能换：
+ *   1. `stopAll()` 先把正在播的、和排着队的全掐掉 —— 用户点了新的，旧的
+ *      就该立刻让位，而不是念完再说；
+ *   2. 再把这段文字送去合成，音频照旧从 SSE 回来，队列接着播。
+ *
+ * 先掐后送是有意的：合成要一秒上下，先送再掐会让旧的那句多念出一个字。
+ */
+/**
+ * [点哪段读哪段] 按「合成它用的那段文字」归档的音频。
+ *
+ * 一次云端往返实测约 4.8 秒 —— 所以「点一段，立刻听见」只能靠**记忆**：只要
+ * 那段话被合成过，就不该再去要第二遍。而它通常被合成过：每一帧 `tts` 都带着
+ * 自己那一段文字（宿主一直在推，只是这边以前没接），开了自动念回复就更是整条
+ * 回复都念过一遍 —— 那些采样以前播完就丢了。
+ *
+ * 键是文字；限额两道（条数 + 采样总数），因为 `Int16Array` 两个字节才一个采样，
+ * 按条存长回复很能吃内存。
+ */
+const spokenAudio = new Map<
+  string,
+  { samples: Int16Array; sampleRate: number; durationMs: number }
+>();
+const SPOKEN_AUDIO_LIMIT = 64;
+const SPOKEN_AUDIO_MAX_SAMPLES = 15_000_000;
+let spokenAudioSamples = 0;
+
+function rememberSpokenAudio(
+  text: unknown,
+  samples: Int16Array,
+  sampleRate: number,
+  durationMs: number,
+): void {
+  const key = String(text ?? "").trim();
+  if (key === "" || samples.length === 0) return;
+  const prev = spokenAudio.get(key);
+  if (prev !== undefined) spokenAudioSamples -= prev.samples.length;
+  if (spokenAudio.size >= SPOKEN_AUDIO_LIMIT) {
+    spokenAudio.clear();
+    spokenAudioSamples = 0;
+  }
+  spokenAudio.set(key, { samples, sampleRate, durationMs });
+  spokenAudioSamples += samples.length;
+  // 超了从最旧的开始丢，但**至少留一条** —— 否则刚存进来的会被自己挤出去。
+  while (spokenAudioSamples > SPOKEN_AUDIO_MAX_SAMPLES && spokenAudio.size > 1) {
+    const oldest = spokenAudio.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    const victim = spokenAudio.get(oldest);
+    spokenAudio.delete(oldest);
+    if (victim !== undefined) spokenAudioSamples -= victim.samples.length;
+  }
+}
+
+function recallSpokenAudio(text: string) {
+  return spokenAudio.get(text.trim());
+}
+
+/**
+ * [点哪段读哪段] 还在飞的 say 请求：令牌 → 它将来归档用的那段文字。
+ *
+ * 是**表**不是单个格子。长段合成要几十秒，这中间你要是点了别的，单个格子会被
+ * 顶掉 —— 长的那条回来就成了「无人认领的帧」，被直接放掉，于是它永远进不了
+ * 档案，下次再点还得重来。
+ */
+const awaitingSpokenTexts = new Map<string, string>();
+
+async function speakText(text: string): Promise<void> {
+  const body = text.trim();
+  if (body === "") return;
+  localQueue.stopAll();
+  const hit = recallSpokenAudio(body);
+  if (hit !== undefined) {
+    // 直接送喇叭：没有往返，也就没有等的理由。上面那句 stopAll() 已经把全局
+    // 游标归零，所以它是「现在」响，而不是排在谁后面。
+    playLocalVoice(`cached-${Date.now()}`, 0, hit.samples, hit.sampleRate, hit.durationMs);
+    return;
+  }
+  const token = `c${Date.now().toString(36)}${Math.floor(Math.random() * 1679616).toString(36)}`;
+  awaitingSpokenTexts.set(token, body);
+  // `exact` 要宿主把整段**一次**合成，而不是照常按句切碎。两个好处：
+  // 等待从「几趟云端往返」降到一趟；而且档案的钥匙正好是整段本身 ——
+  // 也就是下一次点击它会递上来的那把。
+  await postMiniMaxAction("say", { text: body, exact: true, token });
+}
+
+/**
+ * 这一下，点在**哪一段**上？
+ *
+ * `HertaBubble` 内部按 `segmentSpeech` 把一条消息拆成一段一个
+ * `div.message-row.herta-row`（空行分段、围栏块单列），所以指针底下那个元素
+ * 就能唯一定位到段 —— 这正是「点哪段读哪段」缺的那一环。
+ *
+ * 挂 onClick 的那层壳**铺满整行**，所以还得先问一句：这一下**落进气泡自己的
+ * 盒子了吗**（话语是 `.message-bubble`，代码块是 `.code-standalone`）。
+ * 落在盒子外面返回 `null` —— 那是**明确的「不算」**，和 `fallback`（算，但
+ * 定位不到段，退回整条）是两回事。宁可念多，不要念错。
+ */
+function paragraphUnderPointer(event: { target?: unknown } | null, fallback: string): string | null {
+  try {
+    const target = event?.target as { closest?: (sel: string) => Element | null } | null | undefined;
+    if (typeof target?.closest !== "function") return fallback;
+    const bubble = target.closest(".message-bubble") ?? target.closest(".code-standalone");
+    if (bubble === null) return null;
+    const row = bubble.closest(".message-row") ?? bubble;
+    const body = row.querySelector(".message-text") ?? row.querySelector(".code-block") ?? bubble;
+    const text = (body.textContent ?? "").trim();
+    return text === "" ? fallback : text;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * 把所有气泡渲染成 Herta 的组件树。
+ *
+ * 她的话外面包了一层可点的壳：点一下就重念那一段。
+ * 壳加在外层而不是改 `HertaBubble` —— 那是 `@gui` 的组件，住在 Herta 源码树里，
+ * 不归这份代码管，也没有留 onClick 的位置。
+ */
 function renderBubbleList(bubbles: readonly Bubble[]): unknown {
-  const children = bubbles.map((b, i) =>
-    b.role === "user"
-      ? createElement(UserBubble, {
-          key: `${i}-user`,
-          text: b.text,
-          ...(b.at === undefined ? {} : { at: b.at }),
-        })
-      : createElement(HertaBubble, {
-          key: `${i}-herta`,
-          text: b.text,
-          lang: "zh",
-          ...(b.at === undefined ? {} : { at: b.at }),
-        }),
-  );
+  const children = bubbles.map((b, i) => {
+    if (b.role === "user") {
+      return createElement(UserBubble, {
+        key: `${i}-user`,
+        text: b.text,
+        ...(b.at === undefined ? {} : { at: b.at }),
+      });
+    }
+    return createElement(
+      "div",
+      {
+        key: `${i}-herta`,
+        onClick: (event: { target?: unknown }) => {
+          const hit = paragraphUnderPointer(event, b.text);
+          if (hit === null) return; // 点在气泡旁边的空白：不算点她
+          void speakText(hit);
+        },
+        title: "点一下，读这一段",
+      },
+      createElement(HertaBubble, {
+        text: b.text,
+        lang: "zh",
+        ...(b.at === undefined ? {} : { at: b.at }),
+      }),
+    );
+  });
   return createElement("div", null, children);
 }
 

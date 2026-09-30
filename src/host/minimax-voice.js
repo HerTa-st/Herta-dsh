@@ -327,6 +327,31 @@ function ensureShared(ctx) {
       }
       return { ok: true, engine: out.engine ?? engine, text: PREVIEW_TEXT, note: "" };
     },
+    /**
+     * 「点哪段读哪段」：界面送一段文字来，用当前引擎说它。
+     *
+     * 与 `preview` 的唯一差别是**文本来自调用方** —— 两者都落到
+     * `pipeline.sayText`，都一样**不受 `realtimeVoice` 管**：用户是明确点了它
+     * 才出声的，不是「自动念回复」顺手带出来的。
+     *
+     * 回执只报成不成；音频照旧从 SSE 推回去，界面不靠这个返回值播放。
+     */
+    async say(text, options) {
+      const engine = mini.engineOf();
+      if (!speaksFor(engine)) {
+        return { ok: false, engine, text, note: MIMO_NOT_WIRED };
+      }
+      const opts = options ?? {};
+      // `exact` 走「整段一次合成」（点哪段读哪段）；其余调用方（试听、自动念
+      // 回复）照旧按句切分 —— 那条路切得对，不该跟着改。
+      const out = opts.exact === true
+        ? await mini.pipeline.sayWhole(text, opts.token)
+        : await mini.pipeline.sayText(text);
+      if (out === null) {
+        return { ok: false, engine, text, note: mini.engineNote ?? "合成失败（看宿主日志）" };
+      }
+      return { ok: true, engine: out.engine ?? engine, text, note: "" };
+    },
   };
 
   /**
@@ -502,6 +527,23 @@ export function registerMiniMaxVoiceRoutes(ctx) {
           const out = await mini.preview();
           sendJson(res, 200, { ...mini.snapshot(), preview: out });
           return;
+        } else if (action === "say") {
+          // 「点哪段读哪段」：正文由界面给 —— 点的是哪条气泡，就是哪段字。
+          // 音频和别的合成一样从 SSE 推回去，所以这里**不等它播完**就回执。
+          const text = typeof body.text === "string" ? body.text.trim() : "";
+          if (text === "") {
+            sendJson(res, 400, { error: "say 需要非空的 text" });
+            return;
+          }
+          // `token` 是界面生成的短标识，会进 utteranceId —— 它靠这个确认
+          // 「哪一帧是我要的那一帧」，而不是猜。只收安全字符，因为它要当 id 用。
+          const token =
+            typeof body.token === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(body.token)
+              ? body.token
+              : "";
+          const said = await mini.say(text, { exact: body.exact === true, token });
+          sendJson(res, 200, { ...mini.snapshot(), say: said });
+          return;
         } else if (action === "warm") {
           // 预热常驻合成进程：设置页把引擎切到「本地模型」时调它 —— 把那 ~3 秒的
           // 模型加载挪到用户还在选的那几秒里。这里**等它加载完**再回执，所以回执
@@ -512,7 +554,7 @@ export function registerMiniMaxVoiceRoutes(ctx) {
         } else {
           sendJson(res, 400, {
             error: `unknown action: ${String(action)}`,
-            allowed: ["adopt", "reset", "preview", "warm"],
+            allowed: ["adopt", "reset", "preview", "say", "warm"],
           });
           return;
         }

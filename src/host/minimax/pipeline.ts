@@ -355,6 +355,37 @@ export function createSpeechPipeline(opts: SpeechPipelineOptions) {
       return hit ?? null;
     },
 
+    /**
+     * 整段一次合成 —— 「点哪段读哪段」专用，**不切分**。
+     *
+     * 为什么另开一个入口而不是给 `sayText` 加开关：`sayText` 的调用方还有试听
+     * 和自动念回复，它们的切分是对的（每片十几秒内就开口）。只有点击那条路吃亏，
+     * 而且吃在两头：
+     *
+     *   · **等待**：一次云端往返实测约 4.8 秒，切成四片就是四个排队 —— 十几秒。
+     *   · **存档对不上**：界面按「合成它用的那段文字」存档，存进去的是碎片；
+     *     而点击给的是一整段，钥匙永远对不上，于是每点一次都从头再来一遍。
+     *
+     * `token` 由界面生成并塞进 utteranceId —— 于是界面**确知**哪一帧是它要的
+     * 那一帧，不必靠「第一帧多半是我的」这种猜测。
+     */
+    async sayWhole(rawText: string, token?: string): Promise<SynthesizedUnitResult | null> {
+      if (!speaksFor(engineOf())) return null;
+      const text = String(rawText ?? "").trim();
+      if (text === "") return null;
+      const units = segmentSpeechUnits(Array.from(text), true, "zh");
+      const whole = units
+        .map((u) => (typeof u.speak === "string" ? u.speak.trim() : ""))
+        .filter((s) => s !== "")
+        .join("");
+      if (whole === "") return null;
+      const tag = typeof token === "string" && token !== "" ? `say-${token}` : `say${(saySeq += 1)}`;
+      const utt = open(tag, "herta_say");
+      const out = await dispatch(utt, whole);
+      utt.streaming = false;
+      return out ?? null;
+    },
+
     stats() {
       return { cappedUtterances, ignoredFrames, mutedFrames, utterances: utteranceSeq };
     },
