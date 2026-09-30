@@ -5,7 +5,7 @@
   "icon": "./icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YUNmengyuan/Herta-dsh.git"
+    "url": "https://github.com/HerTa-st/Herta-dsh.git"
   },
   "type": "module",
   "main": "lib/index.js",
