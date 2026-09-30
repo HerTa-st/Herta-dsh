@@ -75,16 +75,48 @@ function loadConfig() {
   return cfg;
 }
 
-function readKey(cfg) {
+/** 密钥清洗：取第一行非空内容（凭据值与文件内容走同一套规则）。 */
+export function normalizeKey(text) {
+  if (typeof text !== "string") return null;
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (t !== "") return t;
+  }
+  return null;
+}
+
+/**
+ * 取密钥。**优先级**：
+ *
+ *   1. `credentialKey` —— 设置页「Fish 密钥」那一行，值落在 DSH 凭据缝
+ *      （`$DSH_HOME/.credentials.yaml`，0600），由 `minimax-voice.js` 现读现传。
+ *   2. `cfg.keyFile`（默认 `C:/herta-ai/fish_key.txt`）—— 本机自用的明文兜底，
+ *      给「不想把密钥交给设置页」与旧配置留的路。
+ *
+ * 密钥**不进 Config**：profile 的 `cordis.patch.yml` 是明文 YAML（与 MiniMax 同一条规矩，
+ * `scripts/test-herta-settings.mjs` 有断言守着）。
+ */
+export function readKey(cfg, credentialKey) {
+  const fromCredential = normalizeKey(credentialKey);
+  if (fromCredential !== null) return fromCredential;
   try {
     const p = cfg.keyFile ?? DEFAULT_KEY_PATH;
     if (!existsSync(p)) return null;
-    for (const line of readFileSync(p, "utf8").split(/\r?\n/)) {
-      const t = line.trim();
-      if (t !== "") return t;
-    }
+    return normalizeKey(readFileSync(p, "utf8"));
   } catch {
     /* 读不到就当没配 */
+  }
+  return null;
+}
+
+/** 密钥来自哪：`"credential"` / `"file"` / `null`。诊断与单测用。 */
+export function keySource(cfg, credentialKey) {
+  if (normalizeKey(credentialKey) !== null) return "credential";
+  try {
+    const p = cfg?.keyFile ?? DEFAULT_KEY_PATH;
+    if (existsSync(p) && normalizeKey(readFileSync(p, "utf8")) !== null) return "file";
+  } catch {
+    /* 同 readKey：读不到就算没有 */
   }
   return null;
 }
@@ -298,6 +330,9 @@ function applyEffect(path, preset) {
  *
  * 键名要映射：设置页用带前缀的 `fishRef` / `fishSpeed` / `fishEffect` / `fishPreset`
  * （避免和 `voiceEngine` 那批挤在一起），本模块内部叫 `ref` / `speed` / `effect` / `preset`。
+ *
+ * **密钥不在这张表里** —— 它不落 `cfg`，而是走 `readKey(cfg, overrides.fishKey)`：
+ * 设置页那一行存的是 DSH 凭据，不归 `fish_config.json` 管。
  */
 const OVERRIDE_KEYS = Object.freeze({
   ref: "fishRef",
@@ -329,9 +364,11 @@ export async function trySynthesize(text, overrides) {
   if (cfg.enabled !== true) return null;
   if (typeof text !== "string" || text.trim() === "") return null;
 
-  const key = readKey(cfg);
+  const key = readKey(cfg, overrides?.fishKey);
   if (key === null) {
-    log("没找到密钥，回落本地");
+    log(
+      `没找到 Fish 密钥（设置页「Fish 密钥」或 ${cfg.keyFile ?? DEFAULT_KEY_PATH}），不发声`,
+    );
     return null;
   }
 
@@ -370,12 +407,13 @@ export async function trySynthesize(text, overrides) {
   };
 }
 
-/** 供设置页/诊断用：当前是否已启用且有密钥。 */
-export function fishStatus() {
+/** 供设置页/诊断用：当前是否已启用、有没有密钥、密钥来自哪。 */
+export function fishStatus(credentialKey) {
   const cfg = loadConfig();
   return {
     enabled: cfg.enabled === true,
-    keyPresent: readKey(cfg) !== null,
+    keyPresent: readKey(cfg, credentialKey) !== null,
+    keySource: keySource(cfg, credentialKey),
     ref: cfg.ref ?? DEFAULT_REF,
     effect: cfg.effect === true,
     preset: cfg.preset ?? "terminal_textured",

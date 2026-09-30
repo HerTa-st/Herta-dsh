@@ -1883,6 +1883,12 @@ const CREDENTIALS = [
     hint: "MiniMax Token 套餐（`sk-cp-…`）。同样被宿主读取；两把都填时合成优先用套餐密钥。",
     placeholder: "sk-cp-…",
   },
+  {
+    ref: "FISH_API_KEY",
+    label: "Fish 密钥",
+    hint: "Fish Audio 云端语音用（「语音引擎」选 Fish 时才读）。填在这里**优先**于 `C:\\herta-ai\\fish_key.txt` —— 那份明文只是没填这里的兜底。",
+    placeholder: "Fish Audio 控制台里的 API Key",
+  },
 ];
 
 /**
