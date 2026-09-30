@@ -51,9 +51,71 @@ const DEFAULTS = {
   timeoutMs: 30000,
   /** 直连超时（短一点，失败就尽快转代理）。 */
   directTimeoutMs: 6000,
-  /** 代理地址；设为 null 可显式禁用代理。 */
-  proxy: "http://127.0.0.1:7897",
+  /**
+   * 代理地址。**默认没有代理**。
+   *
+   * 这里曾经写死 `http://127.0.0.1:7897` —— 那是某台开发机上 Clash 的端口。
+   * 后果：凡是直连不到 `api.fish.audio` 的机器（国内网络基本都连不上），
+   * 兜底就落到那个端口上，而它在本机之外**不存在** —— 于是「填了密钥也不出声」，
+   * 而且用户没有任何地方能看到或改这个值。
+   *
+   * 现在的取值顺序见 {@link resolveProxy}：设置页 → 配置文件 → 环境变量 → 无。
+   */
+  proxy: null,
 };
+
+/**
+ * 定出这次请求要走哪个代理。**纯函数**（`process.env` 只读），可单测。
+ *
+ * 顺序（左优先，空串一律当没设）：
+ *
+ *   1. `settingProxy` —— 设置页「Fish 代理」那一行（`fishProxy`）
+ *   2. `cfg.proxy`    —— `fish_config.json` 里的 `proxy`（本机自用那条路）
+ *   3. `HTTPS_PROXY` / `HTTP_PROXY` 环境变量（大小写都认）—— 用户自己已经有代理时不必再填
+ *   4. `null`         —— 不代理，直连；连不上就把原因说出来（见 `getLastFailure`）
+ *
+ * @param {object} cfg - 配置（`loadConfig()` 的产物，可能带 `proxy`）。
+ * @param {unknown} [settingProxy] - 设置页传来的值。
+ * @param {NodeJS.ProcessEnv} [env] - 环境变量（测试可注入）。
+ * @returns {string|null} 代理 URL，或 null（不代理）。
+ */
+export function resolveProxy(cfg, settingProxy, env = process.env) {
+  /** 明确的「不要代理」写法（大小写不认，前后空格不算）。 */
+  const OFF = new Set(["off", "none", "0"]);
+  for (const candidate of [
+    settingProxy,
+    cfg?.proxy,
+    env?.HTTPS_PROXY,
+    env?.https_proxy,
+    env?.HTTP_PROXY,
+    env?.http_proxy,
+  ]) {
+    if (typeof candidate !== "string") continue;
+    const t = candidate.trim();
+    if (t === "") continue; // 没设 = 看下一个
+    // 明确关闭：**后面的都不看了**。否则环境变量已经指了代理时，用户没办法
+    // 从设置页把它关掉 —— 这正是「明确关闭」与「没设」必须区分开的原因。
+    if (OFF.has(t.toLowerCase())) return null;
+    return t;
+  }
+  return null;
+}
+
+/** 上一次失败的原因（给设置页与日志看）。**每次调用入口都会重置**。 */
+let lastFailure = null;
+
+/** 上一次失败的原因，或 null。宿主拿它填 `engineNote`，用户不必翻日志。 */
+export function getLastFailure() {
+  return lastFailure;
+}
+
+/** 记一次失败（内部用）。 */
+function fail(reason) {
+  lastFailure = reason;
+  log(reason);
+  return null;
+}
+
 
 function log(line) {
   try {
@@ -188,7 +250,7 @@ async function callFishDirect(text, cfg, key) {
  * Node 的 fetch 不读系统代理、也不认 HTTP_PROXY，除非进程带 `--use-env-proxy`。
  * DSH 的启动参数改不了，所以在子进程里加那个标志。
  */
-function callFishViaProxy(text, cfg, key) {
+function callFishViaProxy(text, cfg, key, proxy) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -198,8 +260,8 @@ function callFishViaProxy(text, cfg, key) {
         {
           env: {
             ...process.env,
-            HTTP_PROXY: cfg.proxy ?? "http://127.0.0.1:7897",
-            HTTPS_PROXY: cfg.proxy ?? "http://127.0.0.1:7897",
+            HTTP_PROXY: proxy,
+            HTTPS_PROXY: proxy,
           },
           stdio: ["pipe", "pipe", "pipe"],
         },
@@ -266,17 +328,23 @@ function callFishViaProxy(text, cfg, key) {
  */
 let directUsable = true;
 
-/** 取音频：先直连，失败再走代理子进程。 */
+/** 取音频：先直连，失败再走代理子进程。代理从哪来看 {@link resolveProxy}。 */
 async function callFish(text, cfg, key, tmpOut) {
   cfg = { ...cfg, __tmpOut: tmpOut };
+  const proxy = resolveProxy(cfg);
   if (directUsable) {
     const direct = await callFishDirect(text, cfg, key);
     if (direct !== null) return direct;
     directUsable = false;
-    log("直连不可用，本进程内后续都走代理");
+    log(proxy === null ? "直连不可用，且没配代理" : `直连不可用，本进程内后续都走代理 ${proxy}`);
   }
-  if (cfg.proxy === null) return null; // 显式禁用代理
-  return await callFishViaProxy(text, cfg, key);
+  if (proxy === null) {
+    // **把话说清楚**：这里曾经是静默返回 null，用户只看到「不出声」。
+    return fail(
+      "网络到不了 api.fish.audio，而且没有配代理 —— 在设置页「Fish 代理」那一行填一个地址（例如 http://127.0.0.1:7897），或设 HTTPS_PROXY 环境变量",
+    );
+  }
+  return await callFishViaProxy(text, cfg, key, proxy);
 }
 
 /** 叠加信道音效（原地覆盖）。失败不算致命。 */
@@ -339,6 +407,7 @@ const OVERRIDE_KEYS = Object.freeze({
   speed: "fishSpeed",
   effect: "fishEffect",
   preset: "fishPreset",
+  proxy: "fishProxy",
 });
 
 function applyOverrides(cfg, overrides) {
@@ -360,16 +429,16 @@ function applyOverrides(cfg, overrides) {
  *          否则返回与 `tts-runtime.synthesize()` 同形的结果对象。
  */
 export async function trySynthesize(text, overrides) {
+  lastFailure = null;
   const cfg = applyOverrides(loadConfig(), overrides);
-  if (cfg.enabled !== true) return null;
+  if (cfg.enabled !== true) return fail("fish 未启用（fish_config.json 里 enabled 不为 true）");
   if (typeof text !== "string" || text.trim() === "") return null;
 
   const key = readKey(cfg, overrides?.fishKey);
   if (key === null) {
-    log(
+    return fail(
       `没找到 Fish 密钥（设置页「Fish 密钥」或 ${cfg.keyFile ?? DEFAULT_KEY_PATH}），不发声`,
     );
-    return null;
   }
 
   // 先建临时目录 —— 调用方读完会把这个目录整个删掉。
@@ -381,15 +450,16 @@ export async function trySynthesize(text, overrides) {
   try {
     buf = await callFish(text, cfg, key, out);
   } catch (err) {
-    log(`请求失败：${err?.message ?? err}`);
+    return fail(`请求失败：${err?.message ?? err}`);
+  }
+  if (buf === null || buf === undefined) {
+    // callFish 已经写好原因（网络/代理）；这里不再覆盖它。
     return null;
   }
-  if (buf === null || buf === undefined) return null;
 
   const samples = fixWavHeader(buf);
   if (samples <= 0) {
-    log("WAV 解析失败");
-    return null;
+    return fail("音频解析失败（返回的不是完整的 WAV？）");
   }
 
   writeFileSync(out, buf);
@@ -407,7 +477,7 @@ export async function trySynthesize(text, overrides) {
   };
 }
 
-/** 供设置页/诊断用：当前是否已启用、有没有密钥、密钥来自哪。 */
+/** 供设置页/诊断用：当前是否已启用、有没有密钥、密钥来自哪、走不走代理。 */
 export function fishStatus(credentialKey) {
   const cfg = loadConfig();
   return {
@@ -417,6 +487,8 @@ export function fishStatus(credentialKey) {
     ref: cfg.ref ?? DEFAULT_REF,
     effect: cfg.effect === true,
     preset: cfg.preset ?? "terminal_textured",
+    proxy: resolveProxy(cfg),
+    lastFailure,
     configPath: CONFIG_PATH,
     keyFile: cfg.keyFile ?? DEFAULT_KEY_PATH,
   };
