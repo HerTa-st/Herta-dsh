@@ -14,6 +14,7 @@
  *    「记录里有什么我才说什么」）。
  */
 import { existsSync } from "node:fs";
+import { mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { promoteFeian } from "./feian.js";
@@ -81,10 +82,29 @@ export const narrativeListTool = defineTool({
         lines.push(`货架还不存在：${value.directory}（还没有人往上面放过东西）`);
         return [{ type: "text", text: lines.join("\n") }];
       }
+      const skippedNames = new Set(value.skipped.map((s) => s.name));
       lines.push(`货架：${value.directory}`);
       lines.push(`共 ${value.entries.length} 份，其中 ${value.entries.filter((e) => e.inPrompt).length} 份在本次提示词里（${value.promptTokens}/${value.budgetTokens} 估算 token）：`);
       for (const e of value.entries) {
-        lines.push(`  ${e.inPrompt ? "[在提示词]" : "[按需可读]"} ${e.name}  ~${e.tokens} tok`);
+        // 三个状态必须分清（2026-09-30）：以前只有「在提示词 / 按需可读」两种标签，
+        // 于是**因预算落选**的那些读起来像是「都在，需要时能读」—— 而实际上这一轮
+        // 她根本看不见它们。工具描述承诺过如实报告，这里才真的做到。
+        const label = e.inPrompt
+          ? "[在提示词]"
+          : skippedNames.has(e.name)
+            ? "[本次没进提示词]"
+            : "[按需可读]";
+        lines.push(`  ${label} ${e.name}  ~${e.tokens} tok`);
+      }
+      if (value.skipped.length > 0) {
+        lines.push(
+          `\n⚠️ 有 ${value.skipped.length} 份**没有**进本次提示词（预算 ${value.budgetTokens} 估算 token 装不下）：`,
+        );
+        for (const s of value.skipped) lines.push(`  ${s.name}  ~${s.tokens} tok`);
+        lines.push(
+          "它们仍然可以按需读（herta_narrative_read），但**这一轮她看不见** —— 想让她记住，"
+          + "要么把某几份合并、要么删掉不要的（腾出预算）。",
+        );
       }
       if (value.dropped.length > 0) {
         lines.push(`被格式门拦下 ${value.dropped.length} 份（不会进提示词）：`);
@@ -102,6 +122,7 @@ export const narrativeListTool = defineTool({
       exists: existsSync(dir),
       entries: r.items,
       dropped: r.dropped,
+      skipped: r.skipped,
       promptTokens: r.tokens,
       budgetTokens: DEFAULT_MAX_TOKENS,
     }));
@@ -201,5 +222,90 @@ export const memorySaveTool = defineTool({
   },
 });
 
-/** 插件注册时按顺序装上去的三件工具。 */
-export const HERTA_TOOLS = [narrativeListTool, narrativeReadTool, memorySaveTool];
+/**
+ * 把货架上的一份记忆**收起来**（归档）。
+ *
+ * ## 为什么是「收起」而不是「删掉」
+ *
+ * 2026-09-30 体检发现的缺口：六个工具里没有任何删除/清空入口，用户想让她忘掉一件事
+ * 只能去文件管理器里手删 —— 而货架文件名带全角冒号，手工操作很容易删错。
+ *
+ * 但真删是不可逆的，而这是一份**记忆**。所以这条工具做的是「移出货架、留在归档区」：
+ * 它立刻从提示词里消失（这是用户要的效果），原件仍然在盘上（这是保险）。
+ * 返回里会明说「没有真删，想彻底删就自己删那个文件」—— 不替用户做不可逆的决定。
+ *
+ * ## 边界
+ *
+ *  · 只认货架的命名约定（`### 废案…` / `### 记录…`），免得它变成一把随处可用的刀；
+ *  · **不接受路径分隔符**：这条工具会移动文件，`../` 之类必须在入口就挡住；
+ *  · 同名已归档过就加数字后缀，**绝不覆盖**（归档区也要保住历史）。
+ */
+export const forgetTool = defineTool({
+  name: "herta_forget",
+  description:
+    "把货架上的一份记忆收起来（移到 `.herta/narrative/archive/`，**不是真删**）。"
+    + "用它来让她忘掉某件事：收起之后那份文件立刻不再进系统提示词。"
+    + "文件名要用 `herta_narrative_list` 给出的原名（含 `### 废案…` 前缀与 `.txt`）。"
+    + "想彻底删掉，自己删归档区里那个文件 —— 这条工具不替你做不可逆的事。",
+  parameters: {
+    name: { type: "string", required: true, description: "货架上的完整文件名（原名）。" },
+    reason: { type: "string", description: "为什么收起来（会原样带回，方便以后回头看）。" },
+  },
+  output: {
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        forgotten: { type: "boolean" },
+        name: { type: "string" },
+        archivedTo: { type: "string", description: "归档后的完整路径（forgotten 为 true 时）。" },
+        reason: { type: "string", description: "没有收起来时的原因，或调用方给的说明。" },
+      },
+    },
+    render: (args, value) =>
+      value.forgotten
+        ? [
+            {
+              type: "text",
+              text:
+                `已从货架上收起：${value.name}（不再进提示词）`
+                + `\n原件没有删：${value.archivedTo}`
+                + (value.reason === "" ? "" : `\n说明：${value.reason}`),
+            },
+          ]
+        : [{ type: "text", text: `没有收起来：${value.reason}` }],
+  },
+  async execute(args, exec) {
+    const cwd = cwdOf(exec);
+    const name = String(args.name ?? "").trim();
+    const reason = String(args.reason ?? "");
+    const refuse = (why) => ({ forgotten: false, name, archivedTo: "", reason: why });
+
+    if (name === "") return refuse("要给出文件名（herta_narrative_list 里的原名）");
+    if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+      return refuse("文件名里不能有路径分隔符 —— 这条工具只在货架目录里活动");
+    }
+    if (!/^###\s*(废案|记录)/.test(name)) {
+      return refuse("这不是货架上的文件（货架文件都以「### 废案」或「### 记录」开头）");
+    }
+
+    const dir = join(cwd, NARRATIVE_REL);
+    const from = join(dir, name);
+    if (!existsSync(from)) return refuse("货架上没有这个文件");
+
+    const archiveDir = join(dir, "archive");
+    await mkdir(archiveDir, { recursive: true });
+    let to = join(archiveDir, name);
+    for (let i = 2; existsSync(to) && i < 1000; i += 1) to = join(archiveDir, `${name}.${i}`);
+
+    try {
+      await rename(from, to);
+    } catch (error) {
+      return refuse(`移动失败：${String(error?.message ?? error)}`);
+    }
+    return { forgotten: true, name, archivedTo: to, reason };
+  },
+});
+
+/** 插件注册时按顺序装上去的四件工具。 */
+export const HERTA_TOOLS = [narrativeListTool, narrativeReadTool, memorySaveTool, forgetTool];

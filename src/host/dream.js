@@ -35,7 +35,8 @@
  * 上下文暴露出来，`globalThis.__DSH_HERTA__`（客户端）就是这个理由建的。
  * 别的工具（记忆/发声）不需要它，因为它们不调 LLM。
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { promoteFeian, titlesOf } from "./feian.js";
@@ -59,11 +60,29 @@ function manifestPath(cwd) {
 
 /**
  * 读做梦账本。不存在时返回空账本 —— 还没做过梦是正常状态，不是错误。
+ *
+ * ## 坏账本要**留档**，不能就地覆盖（2026-09-30 体检后改）
+ *
+ * 以前这里遇到 `JSON.parse` 失败就静默返回空账本，注释写着「坏文件留在原地可人工
+ * 检查」—— 可紧接着 `appendDreamEpisode` 就整份重写，坏文件当场被覆盖成只剩这一条。
+ * 用户手编账本打错一个字符，下一次做梦后 15 条历史变 1 条，**零警告**。
+ *
+ * 现在改成：把坏文件改名成 `manifest.corrupt-<sha8>.json` 留在原目录（不删、不覆盖），
+ * 用空账本继续，并把这件事记在返回值里 —— 调用方（工具层）会把它端给用户。
+ *
  * @param cwd - 会话工作区根。
+ * @returns 账本；`quarantined` 非空时表示刚把一份坏账本留档。
  */
 export async function readDreamManifest(cwd) {
+  const empty = { version: 1, lastRunAt: null, episodes: [], created: [] };
+  let raw;
   try {
-    const raw = await readFile(manifestPath(cwd), "utf8");
+    raw = await readFile(manifestPath(cwd), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return empty;
+    throw error;
+  }
+  try {
     const parsed = JSON.parse(raw);
     return {
       version: typeof parsed.version === "number" ? parsed.version : 1,
@@ -72,16 +91,29 @@ export async function readDreamManifest(cwd) {
       created: Array.isArray(parsed.created) ? parsed.created : [],
     };
   } catch (error) {
-    if (error.code === "ENOENT") return { version: 1, lastRunAt: null, episodes: [], created: [] };
-    // 账本坏了不该让做梦整个失败 —— 从空账本继续，坏文件留在原地可人工检查。
-    if (error instanceof SyntaxError) return { version: 1, lastRunAt: null, episodes: [], created: [] };
-    throw error;
+    if (!(error instanceof SyntaxError)) throw error;
+    // 留档而不是丢弃：改名失败也要继续（记忆功能不该因为一个人手滑就整个停）。
+    let quarantined = null;
+    try {
+      const hash = createHash("sha256").update(raw).digest("hex").slice(0, 8);
+      const target = join(dirname(manifestPath(cwd)), `manifest.corrupt-${hash}.json`);
+      await rename(manifestPath(cwd), target);
+      quarantined = target;
+    } catch {
+      quarantined = null;
+    }
+    return { ...empty, quarantined, corruptReason: String(error.message ?? error) };
   }
 }
 
 /**
- * 往账本追加一条 episode。写入是整份重写（账本很小，且要保证
- * `lastRunAt` 与 `episodes` 同一次落盘，不会出现只更新一半的状态）。
+ * 往账本追加一条 episode。
+ *
+ * 写入是**整份重写**（账本很小，且要保证 `lastRunAt` 与 `episodes` 同一次落盘，
+ * 不会出现只更新一半的状态），但走「**写临时文件 → fsync → rename**」：
+ * rename 在同目录内是原子的，所以任何时刻盘上要么是完整的旧版、要么是完整的新版。
+ * 2026-09-30 之前是直接 `writeFile` 到目标路径 —— 进程在写的中途死掉就留下半截 JSON，
+ * 而半截 JSON 会被下一次读当成「坏账本」。
  */
 async function appendDreamEpisode(cwd, episode, created) {
   const manifest = await readDreamManifest(cwd);
@@ -93,8 +125,51 @@ async function appendDreamEpisode(cwd, episode, created) {
   };
   const path = manifestPath(cwd);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-  return next;
+  const tmp = `${path}.tmp-${process.pid}-${Date.now().toString(36)}`;
+  let handle = null;
+  try {
+    handle = await open(tmp, "w");
+    await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`, "utf8");
+    // fsync：rename 保证「不是旧的就是新的」，fsync 保证「新的真在盘上」。
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rename(tmp, path);
+  } catch (error) {
+    if (handle !== null) {
+      try {
+        await handle.close();
+      } catch {
+        /* 已经关了 */
+      }
+    }
+    try {
+      await unlink(tmp);
+    } catch {
+      /* 清理失败不该盖住真正的原因 */
+    }
+    throw error;
+  }
+  // 刚把一份坏账本留了档 → 把这件事带给调用方（渲染成一句警告）。**注意**：
+  // 这里是给返回值挂字段，不能污染已经写进盘的那份 JSON（上面用的是 `next` 本身）。
+  return manifest.quarantined === undefined ? next : { ...next, manifestQuarantined: manifest.quarantined };
+}
+
+/**
+ * 把「刚把一份坏账本留档」这件事带进工具输出。
+ *
+ * 没有它，留档就是**静默**的：用户的数据是保住了，但他永远不知道自己踩过一次坑。
+ * 2026-09-30 体检结论：坏账本既要留档，也要说话。
+ *
+ * @param out - 本来要返回的工具输出值。
+ * @param next - `appendDreamEpisode` 的返回值（可能带 `manifestQuarantined`）。
+ */
+function withManifestWarning(out, next) {
+  if (next?.manifestQuarantined === undefined) return out;
+  return {
+    ...out,
+    manifestWarning: `上一次的账本读不出来，已留档为 ${next.manifestQuarantined}；这次是从空账本记起的`,
+  };
 }
 
 /**
@@ -121,14 +196,17 @@ async function promoteAndRecord(cwd, at, title, body) {
     promoted.saved ? { title, file: promoted.name, state: "live" } : undefined,
   );
 
-  return {
-    result: promoted.saved ? "promoted" : "archived",
-    name: promoted.saved ? promoted.name : "",
-    tokens: promoted.saved ? promoted.tokens : 0,
-    reason: promoted.saved ? "" : (promoted.reason ?? "未通过晋升门"),
-    promoted: next.episodes.filter((e) => e.result === "promoted").length,
-    archived: next.episodes.filter((e) => e.result === "archived").length,
-  };
+  return withManifestWarning(
+    {
+      result: promoted.saved ? "promoted" : "archived",
+      name: promoted.saved ? promoted.name : "",
+      tokens: promoted.saved ? promoted.tokens : 0,
+      reason: promoted.saved ? "" : (promoted.reason ?? "未通过晋升门"),
+      promoted: next.episodes.filter((e) => e.result === "promoted").length,
+      archived: next.episodes.filter((e) => e.result === "archived").length,
+    },
+    next,
+  );
 }
 
 /**
@@ -182,17 +260,26 @@ export const hertaDreamTool = defineTool({
         reason: { type: "string", description: "archived 的原因（promoted 时为空）。" },
         promoted: { type: "number", description: "账本里累计晋升条数。" },
         archived: { type: "number", description: "账本里累计归档条数。" },
+        manifestWarning: {
+          type: "string",
+          description: "账本出过问题时的一句话（上一次的账本读不出来、已留档）。正常情况下没有这个字段。",
+        },
       },
     },
-    render: (args, value) =>
-      value.result === "promoted"
+    render: (args, value) => {
+      // 账本出过事就先说 —— 它是「你有一段历史被留档了」这种级别的事实，不该埋在下面。
+      const warning =
+        value.manifestWarning === undefined ? [] : [{ type: "text", text: `⚠️ ${value.manifestWarning}` }];
+      return value.result === "promoted"
         ? [
+            ...warning,
             {
               type: "text",
               text: `已晋升：${value.name}（约 ${value.tokens} token）。账本：累计晋升 ${value.promoted} 条、归档 ${value.archived} 条。`,
             },
           ]
-        : [{ type: "text", text: `这次没有记下来（archived）：${value.reason}` }],
+        : [...warning, { type: "text", text: `这次没有记下来（archived）：${value.reason}` }];
+    },
   },
   async execute(args, exec) {
     const cwd = exec.agent?.session.header.cwd;
@@ -227,14 +314,17 @@ export const hertaDreamTool = defineTool({
       if (blocker !== null) {
         const episode = { at, result: "archived", title: "(蒸馏)", reason: blocker };
         const next = await appendDreamEpisode(cwd, episode);
-        return {
-          result: "archived",
-          name: "",
-          tokens: 0,
-          reason: blocker,
-          promoted: next.episodes.filter((e) => e.result === "promoted").length,
-          archived: next.episodes.filter((e) => e.result === "archived").length,
-        };
+        return withManifestWarning(
+          {
+            result: "archived",
+            name: "",
+            tokens: 0,
+            reason: blocker,
+            promoted: next.episodes.filter((e) => e.result === "promoted").length,
+            archived: next.episodes.filter((e) => e.result === "archived").length,
+          },
+          next,
+        );
       }
 
       // 已有标题进去 —— 提示词据此要求「取一个不同的」，从源头减少撞门。
@@ -286,16 +376,24 @@ export const hertaDreamTool = defineTool({
     // 篇幅下限：一份「梦」应当是一段完整的记忆，不是一句备忘。
     // 备忘走 herta_memory_save，那条路径没有这道门槛。
     if (chars < MIN_DREAM_CHARS) {
-      const episode = { at, result: "archived", title, reason: `too short (${chars} < ${MIN_DREAM_CHARS} chars)` };
-      const next = await appendDreamEpisode(cwd, episode);
-      return {
+      const episode = {
+        at,
         result: "archived",
-        name: "",
-        tokens: 0,
-        reason: episode.reason,
-        promoted: next.episodes.filter((e) => e.result === "promoted").length,
-        archived: next.episodes.filter((e) => e.result === "archived").length,
+        title,
+        reason: `太短了：${chars} 字 < 下限 ${MIN_DREAM_CHARS} 字（要给一段完整的记忆，不是一句备忘）`,
       };
+      const next = await appendDreamEpisode(cwd, episode);
+      return withManifestWarning(
+        {
+          result: "archived",
+          name: "",
+          tokens: 0,
+          reason: episode.reason,
+          promoted: next.episodes.filter((e) => e.result === "promoted").length,
+          archived: next.episodes.filter((e) => e.result === "archived").length,
+        },
+        next,
+      );
     }
 
     // 走与蒸馏路径**完全相同**的门与账（一个出口，两处调用）。

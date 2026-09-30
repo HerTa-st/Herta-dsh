@@ -163,26 +163,29 @@ function readBoolField(config, name, fallback) {
  * Int16 → 清掉那个临时目录。解码用 `mimo-tts.js` 里现成的那份（同一形状的
  * RIFF/WAVE，PCM16 单声道）。
  */
-function createLocalQueue(log) {
+function createLocalQueue(log, onFailure = () => {}) {
   let chain = Promise.resolve(null);
   return (text) => {
     const run = chain.then(async () => {
+      /** 记下原因**并**返回 null —— 2026-09-30：原因以前只进日志，用户什么都看不到。 */
+      const fail = (reason) => {
+        onFailure(reason);
+        log(`本地模型合成失败：${reason}`);
+        return null;
+      };
       try {
         const res = await synthesizeLocal(text);
         if (res?.ok !== true) {
-          log(`本地模型合成失败：${res?.error ?? "未知原因"}`);
-          return null;
+          return fail(res?.error ?? "未知原因");
         }
         const wavPath = typeof res.out === "string" && res.out !== "" ? res.out : null;
         if (wavPath === null) {
-          log("本地模型没有给出 wav 路径");
-          return null;
+          return fail("本地模型没有给出 wav 路径");
         }
         try {
           const { samples, sampleRate } = decodeWavToPcm16(readFileSync(wavPath));
           if (samples.length === 0) {
-            log("本地模型合成出来是空的");
-            return null;
+            return fail("本地模型合成出来是空的");
           }
           return {
             samples,
@@ -198,8 +201,7 @@ function createLocalQueue(log) {
           }
         }
       } catch (err) {
-        log(`本地模型合成抛错：${String(err?.message ?? err)}`);
-        return null;
+        return fail(String(err?.message ?? err));
       }
     });
     chain = run.catch(() => null);
@@ -257,7 +259,14 @@ function ensureShared(ctx) {
     onRefusal: () => mini?.noteState?.(),
   });
 
-  const localQueue = createLocalQueue(log);
+  /**
+   * 上一次本地合成的失败原因（`null` = 没失败或还没跑过）。
+   * 由 `createLocalQueue` 的第二个参数写进来，`synthUnit` 把它端到 `engineNote` 上。
+   */
+  let localFailure = null;
+  const localQueue = createLocalQueue(log, (reason) => {
+    localFailure = reason;
+  });
 
   const mini = {
     /**
@@ -427,9 +436,19 @@ function ensureShared(ctx) {
     // ───── [herta-fish-engine] END ─────
 
     if (engine === "local") {
-      mini.engineNote = null;
+      // **不要再把原因清掉。** 2026-09-30 之前这里是 `engineNote = null` 然后
+      // 直接返回 —— 默认引擎就是 local，而模型没装时用户看到的是「装完一句不念、
+      // 页面上没有任何解释」，原因只躺在宿主日志里。现在端到状态行上。
+      localFailure = null;
       const local = await localQueue(req.text);
-      return local === null ? null : { ...local, engine: "local" };
+      if (local === null) {
+        mini.engineNote =
+          localFailure === null ? "本地语音合成失败（看宿主日志）" : `本地语音不可用：${localFailure}`;
+        mini.noteState();
+        return null;
+      }
+      mini.engineNote = null;
+      return { ...local, engine: "local" };
     }
     if (!keyKnown) await readKey(); // 可能刚在设置页填上
     if (synthesizer.available()) {
@@ -445,7 +464,15 @@ function ensureShared(ctx) {
     mini.noteState();
     log(`回落到本地模型：${mini.engineNote}`);
     const local = await localQueue(req.text);
-    if (local === null) return null;
+    if (local === null) {
+      // 回落也失败时，把本地那条原因**接在后面**：否则用户只看到「云端为什么不可用」，
+      // 却不知道兜底也没接上（最终表现是彻底没声）。
+      if (localFailure !== null) {
+        mini.engineNote = `${mini.engineNote ?? "云端不可用"}；本地兜底也不可用：${localFailure}`;
+        mini.noteState();
+      }
+      return null;
+    }
     return { ...local, engine: "local" };
   };
 
