@@ -254,7 +254,9 @@ function ensureShared(ctx) {
     voice: () => voice.voice(),
     enabled: () => mini.engineOf() === "minimax",
     log: (line) => log(`minimax ${line}`),
-    onUsed: () => voice.stampUsed(),
+    // 2026-09-30：合成器**一直**在传这个数（`onUsed?.(out.billedChars)`），
+    // 是这里把它丢掉的 —— 于是「这一档花了多少」在界面上没有答案。
+    onUsed: (billedChars) => voice.stampUsed(billedChars),
     onVoiceMissing: (id) => voice.markMissing(id),
     onRefusal: () => mini?.noteState?.(),
   });

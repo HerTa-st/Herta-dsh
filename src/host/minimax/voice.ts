@@ -54,6 +54,10 @@ export interface MiniMaxVoiceReadout {
   host?: string;
   clonedAt?: string;
   lastUsedAt?: string;
+  /** 最近一次合成花了多少**计费字符**（MiniMax 自己报的数）。 */
+  lastBilledChars?: number;
+  /** 本进程内累计的计费字符（重启归零；它是"这次会话花了多少"的答案）。 */
+  billedCharsTotal?: number;
   lastError?: MiniMaxVoiceError;
   /** 冷却到期时间（有失败时才有）：设置页据此显示"多久后自动重试"。 */
   retryAt?: string;
@@ -88,7 +92,8 @@ export interface MiniMaxVoiceService {
   /** 服务端说这个克隆已经不存在了：清记录 + 进冷却。 */
   markMissing(voiceId: string): void;
   /** 记一次"刚用过"（节流落盘）。 */
-  stampUsed(): void;
+  /** 记账：这一单元花了多少计费字符（MiniMax 报的数）。没有它就没有「花了多少」的答案。 */
+  stampUsed(billedChars?: number): void;
 }
 
 /** 克隆 id 是不是"她的"（上游按 tag 判断；这里用包含判定，与她 id 的形状一致）。 */
@@ -134,11 +139,25 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
   let transientError: MiniMaxVoiceError | undefined;
   let lastStampAt = 0;
   let inFlight: Promise<MiniMaxVoiceReadout> | null = null;
+  /**
+   * 计费字符（进程级，不随克隆记录走）。
+   *
+   * 为什么值得单独记：MiniMax 每合成一次都会回一个 `billedChars`，而它以前**被丢掉**
+   * （`onUsed` 收了参数没人用）—— 于是「这一档到底花了多少」在界面上没有任何答案，
+   * 用户能看到的只有「静音不停合成」这行小字。
+   */
+  let billedCharsTotal = 0;
+  let lastBilledChars: number | undefined;
 
   const record = () => cloneRecordOf(state);
 
   function readout(): MiniMaxVoiceReadout {
     const rec = record();
+    /** 计费字符是**进程级**的事实（不属于某一条克隆记录），两条分支都要带上。 */
+    const billing = {
+      ...(lastBilledChars === undefined ? {} : { lastBilledChars }),
+      ...(billedCharsTotal > 0 ? { billedCharsTotal } : {}),
+    };
     if (rec !== null) {
       return {
         phase: "ready",
@@ -146,11 +165,12 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
         host: rec.host,
         clonedAt: rec.clonedAt,
         lastUsedAt: rec.lastUsedAt,
+        ...billing,
       };
     }
     const cooling = adoptCoolingDown(state, now(), cooldownMs);
     const lastError = (state.adoptFailure as MiniMaxVoiceError | undefined) ?? transientError;
-    const out: MiniMaxVoiceReadout = { phase: lastError === undefined ? "absent" : "failed" };
+    const out: MiniMaxVoiceReadout = { phase: lastError === undefined ? "absent" : "failed", ...billing };
     if (lastError !== undefined) out.lastError = lastError;
     if (cooling && state.adoptAttemptAt !== undefined) {
       const at = Date.parse(state.adoptAttemptAt);
@@ -305,7 +325,18 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
       emit();
     },
 
-    stampUsed() {
+    /**
+     * 记账：这一单元花了多少**计费字符**（MiniMax 自己报的数，2026-09-30 起真的收下）。
+     *
+     * **累计在节流之前、也在 `rec === null` 早退之前**：节流是为了少写盘、
+     * 认领记录缺失是另一件事，而**钱是按次花的** —— 不能因为「同一秒内第二次」
+     * 或者「记录刚被删」就不计这笔账。
+     */
+    stampUsed(billedChars = 0) {
+      if (Number.isFinite(billedChars) && billedChars > 0) {
+        billedCharsTotal += billedChars;
+        lastBilledChars = billedChars;
+      }
       const rec = record();
       if (rec === null) return;
       const at = now();
