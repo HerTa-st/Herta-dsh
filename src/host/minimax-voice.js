@@ -384,8 +384,9 @@ function ensureShared(ctx) {
     // Fish Audio（云端）—— 失败就报错不出声，**不静默回落**：
     // 用户明确选了这一档，换成别的声音比没声音更糟。
     if (engine === "fish") {
+      let fish = null;
       try {
-        const fish = await import("./fish-tts.js");
+        fish = await import("./fish-tts.js");
         // 设置页那几个 fish* 字段优先；没设过的传 undefined，
         // 由 fish-tts.js 回退到 fish_config.json 里的值。
         const num = (name) => {
@@ -397,6 +398,10 @@ function ensureShared(ctx) {
           fishSpeed: num("fishSpeed"),
           fishEffect: readBoolField(mini.config, "fishEffect", undefined),
           fishPreset: readStringField(mini.config, "fishPreset", undefined),
+          // 代理：设置页「Fish 代理」那一行。留空时 fish-tts.js 依次看
+          // fish_config.json 的 proxy 与环境变量 HTTPS_PROXY / HTTP_PROXY；
+          // 都没有就不走代理，并把「连不上」这件事说出来（见下面那段 engineNote）。
+          fishProxy: readStringField(mini.config, "fishProxy", undefined),
           // 密钥：设置页「Fish 密钥」那一行（DSH 凭据，现读现传，不缓存明文）。
           // 没填时传 undefined，由 fish-tts.js 回落到 C:/herta-ai/fish_key.txt。
           fishKey: (await mini.readFishKey()) ?? undefined,
@@ -408,7 +413,14 @@ function ensureShared(ctx) {
       } catch (err) {
         log(`Fish 合成抛错：${String(err?.message ?? err)}`);
       }
-      mini.engineNote = "Fish Audio 不可用（看宿主日志，或设置页「Fish 语音」那一组）";
+      // 把**具体原因**端到设置页上（2026-09-30）：这里原来是一句笼统的
+      // 「看宿主日志」，于是「网络到不了鱼、又没配代理」这种最常见的失败
+      // 只表现为「填了密钥却不出声」，用户查不到任何东西。
+      const why = fish?.getLastFailure?.() ?? null;
+      mini.engineNote =
+        why === null
+          ? "Fish Audio 不可用（看宿主日志，或设置页「Fish 语音」那一组）"
+          : `Fish Audio 不可用：${why}`;
       mini.noteState();
       return null;
     }

@@ -29,3 +29,4 @@ Thumbs.db
 # test-minimax-live.mjs / say-minimax-wav.mjs 会把合成结果写到仓库根目录，
 # 只用于人耳验收（听一遍确认不是静音），不是交付物。
 _minimax-*.wav
+*.bak-fish-proxy

@@ -33,8 +33,8 @@ export const SETTINGS_GROUPS = Object.freeze([
   }),
   Object.freeze({
     title: "Fish 语音",
-    hint: "只在「语音引擎」选 fish 时生效。这里的值**优先**于外部 fish_config.json —— 那边退化成「没设过时的兜底」。密钥不在这里：它在上面的「Fish 密钥」那一行，走 DSH 凭据存储，不落明文配置。",
-    fields: Object.freeze(["fishRef", "fishSpeed", "fishEffect", "fishPreset"]),
+    hint: "只在「语音引擎」选 fish 时生效。这里的值**优先**于外部 fish_config.json —— 那边退化成「没设过时的兜底」。密钥不在这里：它在上面的「Fish 密钥」那一行，走 DSH 凭据存储，不落明文配置。直连不到 api.fish.audio 时，才需要在「Fish 代理」那一行填一个代理地址。",
+    fields: Object.freeze(["fishRef", "fishSpeed", "fishEffect", "fishPreset", "fishProxy"]),
   }),
   Object.freeze({ title: "差分协处理器", fields: Object.freeze(["deviceScene"]) }),
 ]);

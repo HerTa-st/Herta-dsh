@@ -234,6 +234,14 @@ export const FIELDS = Object.freeze({
     label: "Fish 音效档位",
     wired: true,
   }),
+  fishProxy: Object.freeze({
+    kind: "text",
+    def: "",
+    placeholder: "http://127.0.0.1:7897（留空 = 直连）",
+    label: "Fish 代理",
+    wired: true,
+    note: "直连不到 api.fish.audio 时才需要（国内网络基本都需要）。留空则依次尝试：fish_config.json 里的 proxy、环境变量 HTTPS_PROXY / HTTP_PROXY。",
+  }),
 
   /**
    * ── Fish Audio（`voiceEngine: "fish"`）────────────────────────────────
