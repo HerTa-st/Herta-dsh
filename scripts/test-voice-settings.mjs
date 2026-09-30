@@ -46,9 +46,10 @@ function check(name, cond) {
 
 console.log("voice-settings");
 
-// 1. 引擎判别式 —— 必须与上游 VoiceEngine 逐字一致
-check("三引擎判别式 = local,minimax,mimo", VOICE_ENGINES.join(",") === "local,minimax,mimo");
-check("isVoiceEngine 认全部三个", VOICE_ENGINES.every((e) => isVoiceEngine(e)));
+// 1. 引擎判别式 —— 上游三档 + 本插件新增的 fish（见 voice-settings-shared.js 的注释）
+check("四档判别式 = local,minimax,fish,mimo", VOICE_ENGINES.join(",") === "local,minimax,fish,mimo");
+check("isVoiceEngine 认全部四档", VOICE_ENGINES.every((e) => isVoiceEngine(e)));
+check("isVoiceEngine 认 fish（设置页能选它，判别式就得放行）", isVoiceEngine("fish"));
 check("isVoiceEngine 拒非法值", !isVoiceEngine("gpt") && !isVoiceEngine("") && !isVoiceEngine(null));
 check("isVoiceEngine 拒非字符串", !isVoiceEngine(3) && !isVoiceEngine({}));
 
@@ -149,7 +150,7 @@ check("默认值被冻结", Object.isFrozen(DEFAULT_VOICE_SETTINGS));
 // 共享模块的引擎字面量必须与字段表的取值域完全一致 —— 两处漂移的症状是
 // 「设置页能选，但拼给她的状态里落回默认」。
 check(
-  "共享模块的三引擎与 FIELDS.voiceEngine 的取值域逐字一致",
+  "共享模块的引擎档位与 FIELDS.voiceEngine 的取值域逐字一致",
   VOICE_ENGINES.join(",") === FIELD_VALUES.voiceEngine,
 );
 check(
