@@ -34,25 +34,40 @@ const ok = (cond, label, detail = "") => {
   }
 };
 
-console.log("=== resolveProxy：代理从哪来（顺序 + 明确关闭）===");
-/** 每个用例：描述、配置里的 proxy、设置页的值、环境变量、期望。 */
+console.log("=== resolveProxy：代理从哪来（顺序 + 明确关闭 + 空串不许冲掉配置）===");
+/** 每个用例：描述、配置里的 proxy、设置页传来的 overrides、环境变量、期望。 */
 const env = (o) => o;
 const cases = [
-  ["设置页的值优先于一切", { proxy: "http://cfg:1" }, "http://ui:9", env({ HTTPS_PROXY: "http://env:2" }), "http://ui:9"],
-  ["没设设置页时用配置文件里的", { proxy: "http://cfg:1" }, undefined, env({ HTTPS_PROXY: "http://env:2" }), "http://cfg:1"],
-  ["配置文件也没有时用 HTTPS_PROXY", {}, undefined, env({ HTTPS_PROXY: "http://env:2" }), "http://env:2"],
-  ["小写 https_proxy 也认", {}, undefined, env({ https_proxy: "http://env:3" }), "http://env:3"],
-  ["只设了 HTTP_PROXY 也认", {}, undefined, env({ HTTP_PROXY: "http://env:4" }), "http://env:4"],
-  ["全都没有 → null（**不再有写死的默认代理**）", {}, undefined, env({}), null],
-  ["空串当没设（继续往下看）", { proxy: "  " }, "", env({ HTTPS_PROXY: "http://env:5" }), "http://env:5"],
-  ["设置页写 off → 明确不要代理，环境变量也不再被采用", {}, "off", env({ HTTPS_PROXY: "http://env:6" }), null],
-  ["off 大小写不认", {}, "OFF", env({ HTTPS_PROXY: "http://env:7" }), null],
-  ["none / 0 同义", {}, "0", env({ HTTPS_PROXY: "http://env:8" }), null],
-  ["前后空格不算内容", {}, "  http://ui:10  ", env({}), "http://ui:10"],
-  ["环境变量是纯空格 → 当没设", {}, undefined, env({ HTTPS_PROXY: "   " }), null],
+  ["设置页的值优先于一切", { proxy: "http://cfg:1" }, { fishProxy: "http://ui:9" }, env({ HTTPS_PROXY: "http://env:2" }), "http://ui:9"],
+  ["没设设置页时用配置文件里的", { proxy: "http://cfg:1" }, {}, env({ HTTPS_PROXY: "http://env:2" }), "http://cfg:1"],
+  ["配置文件也没有时用 HTTPS_PROXY", {}, {}, env({ HTTPS_PROXY: "http://env:2" }), "http://env:2"],
+  ["小写 https_proxy 也认", {}, {}, env({ https_proxy: "http://env:3" }), "http://env:3"],
+  ["只设了 HTTP_PROXY 也认", {}, {}, env({ HTTP_PROXY: "http://env:4" }), "http://env:4"],
+  ["全都没有 → null（**不再有写死的默认代理**）", {}, {}, env({}), null],
+  [
+    "**设置页给空串 → 配置文件里的代理必须活着**（2026-09-30 试听不出声的真因）",
+    { proxy: "http://cfg:1" },
+    { fishProxy: "" },
+    env({}),
+    "http://cfg:1",
+  ],
+  [
+    "设置页给空串、配置文件也没有 → 仍然看环境变量",
+    {},
+    { fishProxy: "" },
+    env({ HTTPS_PROXY: "http://env:2b" }),
+    "http://env:2b",
+  ],
+  ["空串当没设（继续往下看）", { proxy: "  " }, {}, env({ HTTPS_PROXY: "http://env:5" }), "http://env:5"],
+  ["设置页写 off → 明确不要代理，环境变量也不再被采用", {}, { fishProxy: "off" }, env({ HTTPS_PROXY: "http://env:6" }), null],
+  ["off 大小写不认", {}, { fishProxy: "OFF" }, env({ HTTPS_PROXY: "http://env:7" }), null],
+  ["none / 0 同义", {}, { fishProxy: "0" }, env({ HTTPS_PROXY: "http://env:8" }), null],
+  ["前后空格不算内容", {}, { fishProxy: "  http://ui:10  " }, env({}), "http://ui:10"],
+  ["环境变量是纯空格 → 当没设", {}, {}, env({ HTTPS_PROXY: "   " }), null],
+  ["overrides 整个缺失（老调用方）也不炸", { proxy: "http://cfg:9" }, undefined, env({}), "http://cfg:9"],
 ];
-for (const [label, cfg, setting, e, want] of cases) {
-  const got = resolveProxy(cfg, setting, e);
+for (const [label, cfg, overrides, e, want] of cases) {
+  const got = resolveProxy(cfg, overrides, e);
   ok(got === want, label, `期望 ${JSON.stringify(want)}，实得 ${JSON.stringify(got)}`);
 }
 
@@ -63,6 +78,14 @@ console.log("\n=== 没有写死的默认代理（回归守门）===");
   ok(
     !/cfg\.proxy\s*\?\?\s*"http:\/\/127\.0\.0\.1:7897"/.test(src),
     "没有 `cfg.proxy ?? \"http://127.0.0.1:7897\"` 这种兜底",
+  );
+  ok(
+    !/^\s*proxy:\s*"fishProxy",/m.test(src),
+    "OVERRIDE_KEYS 里**没有** proxy —— 设置页的值必须并进 cfg 才不会冲掉配置文件（2026-09-30 事故）",
+  );
+  ok(
+    /callFish\(text, cfg, key, out, resolveProxy\(cfg, overrides\)\)/.test(src),
+    "代理是解析好之后**作为参数**传进 callFish 的",
   );
   ok(
     src.includes("网络到不了 api.fish.audio，而且没有配代理"),

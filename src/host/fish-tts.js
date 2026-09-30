@@ -69,21 +69,30 @@ const DEFAULTS = {
  *
  * 顺序（左优先，空串一律当没设）：
  *
- *   1. `settingProxy` —— 设置页「Fish 代理」那一行（`fishProxy`）
+ *   1. `overrides.fishProxy` —— 设置页「Fish 代理」那一行
  *   2. `cfg.proxy`    —— `fish_config.json` 里的 `proxy`（本机自用那条路）
  *   3. `HTTPS_PROXY` / `HTTP_PROXY` 环境变量（大小写都认）—— 用户自己已经有代理时不必再填
  *   4. `null`         —— 不代理，直连；连不上就把原因说出来（见 `getLastFailure`）
  *
+ * ## 为什么设置页的值是**单独一个参数**，而不是并进 `cfg`
+ *
+ * 2026-09-30 真事故：它以前并进 `cfg`（`OVERRIDE_KEYS` 里一条 `proxy: "fishProxy"`），
+ * 于是设置页把一个**空串**传下来时，`applyOverrides` 会把 `cfg.proxy` 从
+ * `"http://127.0.0.1:7897"` **覆盖成 `""`** —— 配置文件里的代理就这么没了，
+ * 解析结果变成「没有代理」，直连又通不了，症状是**试听不出声**。
+ * 界面字段没填时给空串是常态，所以「空串 = 没设」这条必须由**并列比较**保证，
+ * 而不是靠「先覆盖再判断」。
+ *
  * @param {object} cfg - 配置（`loadConfig()` 的产物，可能带 `proxy`）。
- * @param {unknown} [settingProxy] - 设置页传来的值。
+ * @param {{fishProxy?: unknown}} [overrides] - 设置页传来的那批 `fish*` 字段。
  * @param {NodeJS.ProcessEnv} [env] - 环境变量（测试可注入）。
  * @returns {string|null} 代理 URL，或 null（不代理）。
  */
-export function resolveProxy(cfg, settingProxy, env = process.env) {
+export function resolveProxy(cfg, overrides, env = process.env) {
   /** 明确的「不要代理」写法（大小写不认，前后空格不算）。 */
   const OFF = new Set(["off", "none", "0"]);
   for (const candidate of [
-    settingProxy,
+    overrides?.fishProxy,
     cfg?.proxy,
     env?.HTTPS_PROXY,
     env?.https_proxy,
@@ -328,10 +337,14 @@ function callFishViaProxy(text, cfg, key, proxy) {
  */
 let directUsable = true;
 
-/** 取音频：先直连，失败再走代理子进程。代理从哪来看 {@link resolveProxy}。 */
-async function callFish(text, cfg, key, tmpOut) {
+/**
+ * 取音频：先直连，失败再走代理子进程。代理**由调用方解析好传进来**
+ * （见 {@link resolveProxy}）—— 不让 `cfg` 与「设置页的值」互相覆盖。
+ *
+ * @param {string|null} proxy - 这次要走的代理；null = 不代理。
+ */
+async function callFish(text, cfg, key, tmpOut, proxy) {
   cfg = { ...cfg, __tmpOut: tmpOut };
-  const proxy = resolveProxy(cfg);
   if (directUsable) {
     const direct = await callFishDirect(text, cfg, key);
     if (direct !== null) return direct;
@@ -407,7 +420,6 @@ const OVERRIDE_KEYS = Object.freeze({
   speed: "fishSpeed",
   effect: "fishEffect",
   preset: "fishPreset",
-  proxy: "fishProxy",
 });
 
 function applyOverrides(cfg, overrides) {
@@ -448,7 +460,8 @@ export async function trySynthesize(text, overrides) {
 
   let buf;
   try {
-    buf = await callFish(text, cfg, key, out);
+    // 代理解析**不经过 `cfg`** —— 设置页传空串时不能把配置文件里的值冲掉（见 resolveProxy）。
+    buf = await callFish(text, cfg, key, out, resolveProxy(cfg, overrides));
   } catch (err) {
     return fail(`请求失败：${err?.message ?? err}`);
   }
