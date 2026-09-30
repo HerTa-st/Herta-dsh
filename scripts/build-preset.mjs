@@ -44,10 +44,15 @@
  * 「活记忆」prompt 段一并憋死。
  *
  * 用法：node scripts/build-preset.mjs
- *   DSH_PACKAGES=<…/node_modules/@deepseek-ai>  覆盖底本所在安装
+ *   DSH_PACKAGES=<…/node_modules/@deepseek-ai>  显式指定底本所在安装（优先级最高）
  *   HERTA_SRC=<Herta 源码树>                     覆盖身份正本来源
+ *
+ * 底本怎么选：见 `resolveBaseline()`。一句话 —— 在「本机 DSH 安装随附的那份」
+ * 与「仓库 `scripts/baselines/` 自带的那份」之间**取版本最新的**。之所以需要
+ * 自带底本：官方那份躺在 Electron 的 `app.asar` 里，裸 Node 读不到，而本机
+ * 解包出来的安装（`dsh-017`）可能比桌面应用的版本旧。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,57 +62,142 @@ const root = resolve(here, "..");
 /** Herta 源码树（身份正本在这里）。 */
 const HERTA_SRC = process.env.HERTA_SRC ?? "E:\\deepseek工作区\\HerTa\\Herta-src";
 
+/** 仓库自带的官方底本目录：`scripts/baselines/standard.dsh-<version>.patch.yml`。 */
+const BASELINE_DIR = join(here, "baselines");
+
 /**
- * 定位一份 DSH 安装里的 `@deepseek-ai` 包目录。
+ * 语义化版本比较，只处理 `主.次.修订[-预发布]`。
  *
- * 构建期需要读官方随附的 `standard.patch.yml`。运行时那份可能在 Electron 的
- * `app.asar` 里（普通 Node 读不到），所以这里走「显式覆盖 + 常见位置探测」，
- * 探测不到就明确报错并告诉用户设哪个变量 —— 不猜、不静默降级。
+ * 用途只有一个：在几个候选底本之间挑最新。所以允许粗糙 —— 拿不准的一律当 0，
+ * 而「有预发布 < 无预发布」这条必须对，否则 `0.2.0-rc.2` 会被 `0.2.0` 压掉。
  *
- * @returns {string} 含 `dsh-web-app/presets/standard.patch.yml` 的目录。
+ * @param {string|undefined} a - 左侧版本。
+ * @param {string|undefined} b - 右侧版本。
+ * @returns {number} a 相对 b 的正负。
  */
-function detectDshPackages() {
-  const probe = (dir) =>
-    dir !== undefined &&
-    dir !== "" &&
-    existsSync(join(dir, "dsh-web-app", "presets", "standard.patch.yml"));
+function compareVersions(a, b) {
+  const parse = (value) => {
+    const [core = "", pre = ""] = String(value ?? "").split("-", 2);
+    return { nums: core.split(".").map((n) => Number.parseInt(n, 10) || 0), pre };
+  };
+  const left = parse(a);
+  const right = parse(b);
+  for (let i = 0; i < 3; i += 1) {
+    const diff = (left.nums[i] ?? 0) - (right.nums[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  if (left.pre === right.pre) return 0;
+  if (left.pre === "") return 1;
+  if (right.pre === "") return -1;
+  const tail = (pre) => Number.parseInt(pre.split(".").pop(), 10) || 0;
+  return tail(left.pre) - tail(right.pre);
+}
 
+/** 读一份 DSH 安装里 `dsh-web-app` 的版本；读不到返回 undefined。 */
+function webAppVersion(dir) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dir, "dsh-web-app", "package.json"), "utf8"));
+    return typeof manifest.version === "string" ? manifest.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 列出声称 `standard.dsh-<version>.patch.yml` 命名的自带底本。 */
+function vendoredBaselines() {
+  if (!existsSync(BASELINE_DIR)) return [];
+  return readdirSync(BASELINE_DIR)
+    .map((name) => /^standard\.dsh-(.+)\.patch\.yml$/.exec(name))
+    .filter((match) => match !== null)
+    .map((match) => ({
+      version: match[1],
+      file: join(BASELINE_DIR, match[0]),
+      origin: "仓库自带底本",
+    }));
+}
+
+/**
+ * 挑一份官方 `standard.patch.yml` 作底本。
+ *
+ * ## 为什么不是「读本机安装」就完事
+ *
+ * 运行时那份官方底本在 Electron 的 `app.asar` 里（裸 Node 读不进去），而本机
+ * 唯一解包出来的安装是 `dsh-017`，版本 `0.1.7-rc.2` —— 桌面应用已经是
+ * `0.2.0-rc.2`。只信本机安装的后果**不是构建报错，而是静默用旧底本生成 preset**：
+ * 官方在新版里加的工具会凭空少几项，症状是「她少了某个能力」，没人会往构建脚本上想。
+ *
+ * 所以候选分两类：本机 DSH 安装随附的那份，和仓库自带的版本化底本
+ * （`scripts/baselines/`，provenance 见该目录 README）。取版本最新的那份，
+ * 于是「装了更新的 DSH 就自动跟上游，没装就用自带的」，两种情况下都不会静默变旧。
+ *
+ * `$env:DSH_PACKAGES` 是显式覆盖，优先级最高、不参与版本比较 —— 用户明确指定
+ * 的那份必须被采用。
+ *
+ * @returns {{file: string, version: string|undefined, origin: string}} 选中的底本。
+ */
+function resolveBaseline() {
   const candidates = [];
-  if (process.env.DSH_PACKAGES !== undefined) candidates.push(process.env.DSH_PACKAGES);
+  const push = (dir, origin) =>
+    candidates.push({
+      dir,
+      file: join(dir, "dsh-web-app", "presets", "standard.patch.yml"),
+      origin,
+    });
 
-  // 从仓库往上找 node_modules/@deepseek-ai（把插件装进某个 profile 时常见）
+  // ① 显式覆盖：直接采用，不问版本。
+  const override = process.env.DSH_PACKAGES;
+  if (override !== undefined && override !== "") {
+    const explicit = {
+      dir: override,
+      file: join(override, "dsh-web-app", "presets", "standard.patch.yml"),
+      origin: "DSH_PACKAGES（显式覆盖）",
+    };
+    if (!existsSync(explicit.file)) {
+      throw new Error(`DSH_PACKAGES 指向的目录里没有 dsh-web-app/presets/standard.patch.yml：\n  ${explicit.file}`);
+    }
+    return { ...explicit, version: webAppVersion(override) };
+  }
+
+  // ② 从仓库往上找 node_modules/@deepseek-ai（把插件装进某个 profile 时常见）。
   let dir = root;
   for (let i = 0; i < 6; i += 1) {
-    candidates.push(join(dir, "node_modules", "@deepseek-ai"));
+    push(join(dir, "node_modules", "@deepseek-ai"), "仓库上层 node_modules");
     const up = dirname(dir);
     if (up === dir) break;
     dir = up;
   }
-  // 本机已知的解包位置。**这两条是机器事实、不是契约**：桌面应用把整棵
-  // `dsh` 打进 `resources\app.asar`（裸 Node 读不进去），而 profile 的
-  // `node_modules/@deepseek-ai` 只是指向上游的 junction —— 上游换位置或卸载之后
-  // 它们就断了。所以本机用的是解包出来的那份 0.1.7-rc.2 运行时（`dsh-017`）。
-  // 换机器 / 换版本时请设 `$env:DSH_PACKAGES`。
-  candidates.push("E:\\deepseek工作区\\HerTa\\dsh-017\\node_modules\\@deepseek-ai");
-  candidates.push("E:\\DeepSeek H\\data\\runtime\\dsh\\node_modules\\@deepseek-ai");
 
-  for (const c of candidates) {
-    if (probe(c)) return c;
+  // ③ 本机已知的解包位置。**这两条是机器事实、不是契约**：桌面应用把整棵
+  //    `dsh` 打进 `resources\app.asar`，profile 里的 `@deepseek-ai` 也可能只是
+  //    指向上游的 junction —— 上游换位置或卸载之后就断了。换机器请设
+  //    `$env:DSH_PACKAGES`；版本比较会保证它们不会把自带的更新底本压掉。
+  push("E:\\deepseek工作区\\HerTa\\dsh-017\\node_modules\\@deepseek-ai", "本机已知解包位置");
+  push("E:\\DeepSeek H\\data\\runtime\\dsh\\node_modules\\@deepseek-ai", "本机已知解包位置");
+
+  const usable = [
+    ...candidates.filter((c) => existsSync(c.file)).map((c) => ({ ...c, version: webAppVersion(c.dir) })),
+    ...vendoredBaselines(),
+  ].sort((a, b) => compareVersions(b.version, a.version));
+
+  if (usable.length === 0) {
+    throw new Error(
+      [
+        "找不到官方 standard.patch.yml 作底本。",
+        `自带底本目录：${BASELINE_DIR}`,
+        "（里面应有 standard.dsh-<version>.patch.yml）",
+        "也可以显式指定一份 DSH 安装：",
+        '  $env:DSH_PACKAGES = "C:\\path\\to\\dsh\\node_modules\\@deepseek-ai"',
+        "试过这些位置（外加自带底本）：",
+        ...candidates.map((c) => `  ${c.file}`),
+      ].join("\n"),
+    );
   }
-  throw new Error(
-    [
-      "找不到 DSH 安装里的 @deepseek-ai 包目录（需要它自带的 dsh-web-app/presets/standard.patch.yml 作底本）。",
-      "请显式指定，例如：",
-      '  $env:DSH_PACKAGES = "C:\\path\\to\\dsh\\node_modules\\@deepseek-ai"',
-      "试过这些位置：",
-      ...candidates.map((c) => `  ${c}`),
-    ].join("\n"),
-  );
+  return usable[0];
 }
 
-const DSH_PACKAGES = detectDshPackages();
+const BASELINE = resolveBaseline();
 
-const BASE = join(DSH_PACKAGES, "dsh-web-app", "presets", "standard.patch.yml");
+const BASE = BASELINE.file;
 const BIO = join(HERTA_SRC, "packages", "herta", "prompts", "HertaBio.txt");
 const ADAPT_PREFIX = join(root, "preset", "adaptation-prefix.md");
 const ADAPT_SUFFIX = join(root, "preset", "adaptation-suffix.md");
@@ -263,8 +353,9 @@ mkdirSync(join(root, "preset"), { recursive: true });
 writeFileSync(OUT, withHeader, "utf8");
 
 const kb = (s) => (Buffer.byteLength(s, "utf8") / 1024).toFixed(1);
-console.log(`DSH 安装    ${DSH_PACKAGES}`);
+console.log(`底本来源    ${BASELINE.origin}`);
 console.log(`底本        ${BASE}`);
+console.log(`底本版本    dsh-web-app ${BASELINE.version ?? "版本未知"}`);
 console.log(`身份正本    HertaBio.txt（${kb(bio)} KB，逐字）`);
 console.log(`处境改写    adaptation-prefix.md（${kb(adaptPrefix)} KB）`);
 console.log(`纪律改写    adaptation-suffix.md（${kb(adaptSuffix)} KB）`);

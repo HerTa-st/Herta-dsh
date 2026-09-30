@@ -1,5 +1,5 @@
 # 本文件由 scripts/build-preset.mjs 生成，请勿手改。
-# 底本：E:\deepseek工作区\HerTa\dsh-017\node_modules\@deepseek-ai\dsh-web-app\presets\standard.patch.yml
+# 底本：E:\deepseek工作区\HerTa\dsh-herta\scripts\baselines\standard.dsh-0.2.0-rc.2.patch.yml
 # 结构：一条 `@deepseek-ai/dsh-agent-preset` 行，作为本包的第二条 bundle patch
 # （见 package.json 的 dsh.bundle.patch 数组）随插件一起装。
 # Agent preset standard: one `@deepseek-ai/dsh-agent-preset` declaration inserted

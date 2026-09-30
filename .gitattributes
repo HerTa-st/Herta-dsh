@@ -1,0 +1,7 @@
+# 官方底本（scripts/baselines/*.patch.yml）是「官方在这一版里到底给 agent 配了什么」
+# 的证据，必须逐字节可复现。本仓库 core.autocrlf=true，不钉住的话别人检出后得到
+# CRLF，scripts/baselines/README.md 里记的 SHA-256 就对不上了。
+#
+# （build-preset.mjs 自己会把 CRLF 归一化成 LF，所以产物不受影响 —— 坏掉的是「证据」
+#   本身，而一个不能对拍的哈希还不如不记。）
+scripts/baselines/*.patch.yml text eol=lf

@@ -1,9 +1,20 @@
 # dsh-herta：把黑塔作为一个 agent（人设 + 记忆 + 语音）与一套界面装进 DSH。
 #
-# 注意：`dsh plugin add dsh-herta` 会把这个包同时写进 profile 的
-# dependencies 与 dsh.profile.bundles，而包自带的这份 patch 会自动应用。
-# 因此**不要再手改 profile 的 cordis.patch.yml** —— 会产生重复的 loader
-# 条目 id，profile 直接启动失败。
+# 用法：`dsh plugin add dsh-herta` 会把这个包同时写进 profile 的 dependencies
+# 与 dsh.profile.bundles，而包自带的这份 patch 会自动应用 —— 所以**这一行
+# `id: herta` 已经在了**，不要再往 profile 里 insert 第二条同名条目：重复的
+# loader 条目 id 会让 profile 直接启动失败。
+#
+# 允许的写法只有一种：在 profile 自己的 cordis.patch.yml 顶层写一条**同 id 的
+# 覆盖式条目**（不是 `insert:`，形如下面这样），它按 id 合并进本行、只改 config：
+#
+#   - id: herta
+#     name: dsh-herta
+#     config:
+#       voiceEngine: minimax
+#
+# 设置（Config）的真相就在这一行的 config 里，命名空间 = 条目 id `herta`；
+# 删掉 profile 里那条覆盖式条目只会让设置回落默认值，不会让插件消失。
 - insert:
     - id: herta
       name: dsh-herta
