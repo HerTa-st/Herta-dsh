@@ -25,6 +25,7 @@ import {
   buildSupervisorVetoHint,
   formatSelfCorrectionText,
   splitSurfaces,
+  splitThoughtFences,
   truncateAtClose,
   thoughtBeforeSpeechTag,
 } from "../src/host/narrative-hints.js";
@@ -142,6 +143,52 @@ console.log("\n=== splitSurfaces：形状 B / C ===");
   ok(r.hasThought === false && r.hasSpeech === true, "标志正确");
 }
 ok(splitSurfaces("")?.speech === "" && splitSurfaces("")?.hasSpeech === false, "空串 → 两面皆空");
+
+console.log("\n=== splitThoughtFences：围栏之外的字是说话（2026-09-30 静默事故的根因）===");
+{
+  // 真事故原样：turn 17 的回话开头是正常发言，后面挂了一段内心话。
+  // 修之前 speech 为空 → 客户端一个字都不显示（她说了话，界面上什么都没有）。
+  const raw =
+    "**A 生效了，而且这次能证明。** 刚写进去的废案——文件第 3 行确实变了。\n（我 想）不过他多半会问一句「什么时候生效」。（/我 想）";
+  const r = splitSurfaces(raw);
+  ok(r.speech.includes("A 生效了"), "围栏之前的正常发言回到 speech", JSON.stringify(r.speech.slice(0, 30)));
+  ok(r.speech.includes("文件第 3 行确实变了"), "围栏之前的整段都留着");
+  ok(r.thought === "不过他多半会问一句「什么时候生效」。", "围栏之内才是思考", JSON.stringify(r.thought));
+  ok(r.hasSpeech === true && r.hasThought === true, "两面都非空");
+  ok(r.speech.includes("（我 想）") === false, "思考记号没漏进说话里");
+}
+{
+  const r = splitSurfaces("（我 想）A（/我 想）围栏之后说的话。");
+  ok(r.thought === "A" && r.speech === "围栏之后说的话。", "闭围栏之后回到说话", JSON.stringify(r.speech));
+}
+{
+  const r = splitSurfaces("前半句。（我 想）念头（/我 想）后半句。");
+  ok(r.thought === "念头", "围栏内的念头");
+  ok(r.speech === "前半句。后半句。", "围栏两侧的说话按原样拼回", JSON.stringify(r.speech));
+}
+{
+  const r = splitSurfaces("（我 想）第一段（/我 想）中段（我 想）第二段（/我 想）");
+  ok(r.thought === "第一段\n第二段", "多段思考逐段累加", JSON.stringify(r.thought));
+  ok(r.speech === "中段", "夹在两段思考之间的说话留得住", JSON.stringify(r.speech));
+}
+ok(
+  splitSurfaces("（我 想）只想不说（/我 想）").speech === "",
+  "【回归】整段都是思考围栏时 speech 仍为空（rethink 阶段就靠这个保持不可见）",
+);
+ok(
+  splitThoughtFences("没有围栏").speech === "没有围栏" && splitThoughtFences("没有围栏").thought === "",
+  "找不到围栏 → 全是说话",
+);
+ok(
+  splitThoughtFences("孤立的（/我 想）记号").speech === "孤立的记号",
+  "没有开围栏的孤立闭围栏记号只被剥掉记号本身",
+);
+ok(
+  splitThoughtFences("半句（我 想）未闭合").thought === "未闭合" &&
+    splitThoughtFences("半句（我 想）未闭合").speech === "半句",
+  "开围栏之后没有闭围栏 → 后面整段算思考",
+);
+ok(splitThoughtFences("")?.speech === "" && splitThoughtFences("")?.thought === "", "空串安全");
 
 console.log("\n=== splitSurfaces：边界（上游为这些踩过坑）===");
 {

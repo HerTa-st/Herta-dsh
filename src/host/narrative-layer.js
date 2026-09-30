@@ -38,6 +38,19 @@
  *   · **任何失败一律放行** —— 复核坏了不该让她说不出话
  *   · **配额到顶一律放行** —— `steer` 会让 turn 继续，持续否决她将永远说不完
  *   · **拿不到路由就跳过** —— 不猜模型（`GenerateOptions.provider/model` 必填）
+ *
+ * ## 三、空轮护栏（2026-09-30 补）
+ *
+ * 同一个 `agent/turn-stopping`，注册在复核**之后**：清点这一轮用户到底有没有
+ * 看到东西（`silence-guard.js`），没有就注入一条**看得见的通知**并要求她重说。
+ *
+ * 起因是真事故：模型会把整段回话写进思考通道，DSH 的消息里于是只有 `reasoning`
+ * 块、没有 `text` 块，`turn/end` 照样报 `completed` —— 界面上一个字都没有。
+ * 这类轮次**复核拦不住**（复核看的是「她说的这句站不站得住」，而她什么都没说），
+ * 所以必须有一条只管「有没有说」的护栏。
+ *
+ * 三条底线与复核一致：**任何失败一律放行**、**配额到顶一律放行**、
+ * **复核本轮已否决时跳过**（那条静默是 rethink 阶段故意要的）。
  */
 
 import { VetoBudget, buildVetoSteering, resolveRoute } from "./supervisor.js";
@@ -48,6 +61,7 @@ import {
   decideBeat,
   failureSummary,
 } from "./beat-policy.js";
+import { SilenceBudget, buildSilentTurnNotice, inspectTurnActivity } from "./silence-guard.js";
 import { markPhase } from "./narrative-beacon.js";
 
 /** 一次探测的结果缓存。 */
@@ -184,6 +198,107 @@ export async function reviewTurn({ ctx, agent, turn, signal, budget, marks }) {
 }
 
 /**
+ * 清点一轮，**什么都没说就注入一条看得见的通知**。
+ *
+ * 「什么都没说」的判据在 `silence-guard.js`：这一轮的助手消息里没有一段用户
+ * 看得见的正文（`speech` 非空），也没有工具调用。命中就 `steer` 一条通知 ——
+ * 它同时是给用户看的说明和给她下的重说指令。
+ *
+ * **永不抛错**：任何一步出问题都记一条日志然后放行（与 `reviewTurn` 同一条底线）。
+ *
+ * @param {object} params
+ * @param {object} params.agent - turn-stopping 载荷里的 agent。
+ * @param {number} params.turn - turn 号。
+ * @param {SilenceBudget} params.budget - 提醒配额。
+ * @param {object} params.marks - 诊断标记对象（复核的结论也在这里）。
+ * @returns {Promise<boolean>} 是否注入了提醒。
+ */
+export async function guardSilentTurn({ agent, turn, budget, marks }) {
+  const session = agent?.session;
+  if (session === null || session === undefined) return false;
+
+  let events;
+  try {
+    // 与 `pickCurrentTurnFromEvents` 同一个取法：事件的 `data.turn` 才是
+    // 「哪一轮」的可靠依据（会话表面里没有 `turn/start`，也没有空的助手消息）。
+    events = session.snapshotEvents?.();
+  } catch (error) {
+    marks.silenceError = String(error?.message ?? error);
+    return false;
+  }
+  if (Array.isArray(events) === false) return false;
+
+  const report = inspectTurnActivity(events, turn);
+  marks.silenceLast = {
+    turn,
+    silent: report.silent,
+    reason: report.reason,
+    hasText: report.hasText,
+    hasToolCall: report.hasToolCall,
+    visibleChars: report.visibleSpeech.length,
+    thoughtChars: report.thoughtChars,
+  };
+  if (report.silent === false) return false;
+
+  // 复核刚否决过这一轮 → 那条静默是复核**故意要的**（rethink 阶段就是要她只想不说），
+  // 这时候再插一句「你怎么什么都没说」只会打架。放行，交给复核的 respeak。
+  const last = marks.supervisorLast;
+  if (last !== undefined && last.turn === turn && typeof last.stage === "number") {
+    marks.silenceLast.skipped = "supervisor-intervened";
+    return false;
+  }
+
+  if (budget.canNotice(turn) === false) {
+    marks.silenceLast.skipped = "budget-exhausted";
+    console.log(`[dsh-herta] 空轮提醒配额已用尽（turn ${turn}），放行`);
+    return false;
+  }
+
+  const { createUserMessage } = probeCache?.llm ?? {};
+  if (typeof createUserMessage !== "function") {
+    marks.silenceLast.skipped = "no-createUserMessage";
+    return false;
+  }
+
+  const attempt = budget.record(turn);
+  const text = buildSilentTurnNotice({ turn, attempt });
+  try {
+    agent.steer(
+      createUserMessage({
+        content: [{ type: "text", text }],
+        // `form`/`summary` 是核心 `dsh-repeat-tool-reminder` 用的通知外形：
+        // 会话格式 v4 只要求 `kind` 非空且不是字面量 `plugin`，其余字段原样保留
+        // （`dsh-session-format-v3-to-v4` 的 `rewriteV3MessageSource`）。
+        source: { kind: "plugin:dsh-herta", form: "notice", summary: `空轮 turn ${turn}` },
+      }),
+    );
+  } catch (error) {
+    // 通知外形万一不被接受，退回普通注入 —— 功能（让她重说）比外形要紧。
+    marks.silenceLast.noticeFormError = String(error?.message ?? error);
+    try {
+      agent.steer(
+        createUserMessage({
+          content: [{ type: "text", text }],
+          source: { kind: "plugin:dsh-herta" },
+        }),
+      );
+    } catch (fallbackError) {
+      marks.silenceLast.steerError = String(fallbackError?.message ?? fallbackError);
+      console.log(`[dsh-herta] 空轮提醒注入失败（已放行）：${marks.silenceLast.steerError}`);
+      return false;
+    }
+  }
+
+  marks.silenceLast.injected = true;
+  marks.silenceLast.attempt = attempt;
+  markPhase("silence", { count: true, turn, attempt });
+  console.log(
+    `[dsh-herta] 空轮提醒 turn ${turn}（第 ${attempt} 次）：这一轮只出了思考（${report.reason}，思考 ${report.thoughtChars} 字），界面上不会显示任何东西`,
+  );
+  return true;
+}
+
+/**
  * 把叙述层挂到宿主上，并通过 `globalThis` 暴露诊断信息。
  *
  * 与客户端那套 `globalThis.__DSH_HERTA__` 同一个理由：DSH 不把宿主 cordis
@@ -261,6 +376,34 @@ export async function installNarrativeLayer(ctx) {
         }
       }),
     "dsh-herta: 复核（supervisor）",
+  );
+
+  // ── 空轮护栏：这一轮什么都没说就出声 ────────────────────────────────────
+  //
+  // **注册顺序有关系**：`turn-stopping` 是 serial 模式，监听器按注册顺序执行，
+  // 所以这个钩子跑在复核之后 —— `guardSilentTurn` 要读 `marks.supervisorLast`
+  // 才能知道「这一轮的静默是不是复核故意要的」。万一顺序变了，后果只是复核否决
+  // 的那一轮多出一句多余提醒（不会崩、不会死循环：两边都有配额）。
+  const silenceBudget = new SilenceBudget();
+  marks.silenceBudgetPerTurn = silenceBudget.max;
+  let silenceNotices = 0;
+
+  ctx.effect(
+    () =>
+      ctx.on("agent/turn-stopping", async ({ agent, turn }) => {
+        try {
+          const injected = await guardSilentTurn({ agent, turn, budget: silenceBudget, marks });
+          if (injected) {
+            silenceNotices += 1;
+            marks.silenceNotices = silenceNotices;
+          }
+        } catch (error) {
+          // 兜底：护栏坏掉绝不能影响她的 turn。
+          marks.silenceError = String(error?.message ?? error);
+          console.log(`[dsh-herta] 空轮护栏异常（已放行）：${marks.silenceError}`);
+        }
+      }),
+    "dsh-herta: 空轮护栏（silence guard）",
   );
 
   // ── 诊断：turn 出错时也取一次路由 ───────────────────────────────────────

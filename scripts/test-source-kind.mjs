@@ -119,10 +119,10 @@ function sourceLiterals(text) {
 }
 
 // 需要被检查的模块：所有真会构造消息的 host 模块。
-// `narrative-layer.js` 的两处是**必须**存在的（监督者否决 + 分拍各一条）；
-// 少了说明它被改成了别处构造，应当同步更新本测试。
+// `narrative-layer.js` 的四处是**必须**存在的（复核否决 + 分拍 + 空轮提醒 + 它的
+// 退回注入各一条）；少了说明它被改成了别处构造，应当同步更新本测试。
 const EXPECTED = new Map([
-  ["narrative-layer.js", 2],
+  ["narrative-layer.js", 4],
   ["supervisor-llm.js", 1],
   ["dream-distill-llm.js", 1],
 ]);
