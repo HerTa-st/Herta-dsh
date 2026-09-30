@@ -103,17 +103,34 @@ data/voice/**                  语音（上游仓库自身并不分发）
 四份许可原文一并收录在 `assets/tts-runtime/LICENSES/`（逐字取自上游
 `packages/gui/resources/licenses/`）。
 
-> ⚠️ **`espeak-ng` 是 GPL-3.0-or-later，而且静态链接进 `sherpa-onnx-c-api.dll`。**
-> 这个 dll 一旦随包分发，GPL 的义务就跟着它（要能提供对应源码 —— 上游通知文件里
-> 指的就是 sherpa-onnx 1.13.6 的 CMake 树与那个 fork 的 commit）。
-> 本地自用没问题；**要公开分发这个包时，这一条需要你自己拍板**。
-> 不承担的办法只有一个：不随包分发离线引擎（也就失去本地合成能力）。
->
-> ⚠️ **而且「公开分发」这件事已经发生了**（2026-09-30 核实）：`package.json` 的
-> `files` 里有 `assets`，所以 npm 上的 `dsh-herta@0.1.4` **已经包含**这 22 MB 原生件
-> —— 上面那条不是在讨论「将来某天」。要么按 GPL 处理（随包提供对应源码或书面要约，
-> 并把这一项也写进 [`NOTICE.md`](./NOTICE.md)），要么把 `assets/tts-runtime/` 从
-> 发行物里去掉（本地引擎不可用，云端引擎不受影响）。
+### GPL 合规：对应源码怎么拿到（2026-10-01 补全）
+
+`espeak-ng`（GPL-3.0-or-later）**静态链进** `sherpa-onnx-c-api.dll`，这个 dll 随包分发，
+所以 GPL 的义务跟着它走。本仓库按 GPL-3.0 第 6 条给出**对应源码的获得方式**：
+
+| 组件 | 对应源码 |
+|---|---|
+| `sherpa-onnx` 1.13.6（含构建脚本） | <https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.6> |
+| `espeak-ng`（fork，commit `ed530aa113046142eb5115cf2fc9157854d0ffe1`） | <https://github.com/csukuangfj/espeak-ng> —— 上游构建脚本里锁定的正是这个 commit |
+| `piper-phonemize`（fork，commit `f3ff95afc03640bc1399e113e83361192a2fafb4`） | <https://github.com/csukuangfj/piper-phonemize>（MIT，列此便于追溯） |
+
+上述地址不是我猜的：它们**逐字取自上游构建脚本**
+`k2-fsa/sherpa-onnx@v1.13.6` 的 `cmake/espeak-ng-for-piper.cmake` 与 `cmake/piper-phonemize.cmake`，
+那里锁定了下载 URL、commit 与 SHA-256（espeak-ng 的为
+`e4e262cbe34f7fe21f91f1ba3397f2728e1f30eafbae7853f2b753a9ed13f0dd`）。
+
+**书面要约（兜底）**：上述地址若哪天失效，可**通过本仓库的 issue 索取**对应的完整源码
+（含构建脚本），自本版本发布之日起 **三年内**有效。
+
+**本仓库未修改**这四个组件，它们按上游发布的二进制原样随包分发；如将来修改，会在此标明改动。
+
+> 说明：GPL 要求的是「拿到二进制的人也能拿到那部分源码」，**不是**「写一句声明」。
+> 所以上面给的是**可下载的源码地址 + 一个可发信的索取渠道**，两项都做，才算把这一条补齐。
+> 另外，本地语音模型（`herta-best-e72`）**不随本仓库分发**（见下一节），故不在此范围内。
+
+> ⚠️ **「公开分发」这件事已经发生了**：`package.json` 的 `files` 里有 `assets`，
+> 所以发布到 npm 的版本**已经包含**这 22 MB 原生件 —— 上面不是「将来某天」的问题。
+> （本节原先写的是「要公开分发时这一条需要你自己拍板」，现已按上面的方式补全。）
 > 另：`NOTICE.md` 的素材清单此前**只列了角色素材**，漏了这块原生件 —— 已在那一份里补上。
 
 ## 模型归档
