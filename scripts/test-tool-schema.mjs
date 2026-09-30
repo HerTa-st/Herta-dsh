@@ -54,6 +54,19 @@ function returnedInExecute(tool) {
   const keys = new Set();
   for (let i = 0; i < lines.length; i += 1) {
     if (!/return\s+(?:\w+\()?\{/.test(lines[i]) && !/=>\s*\(\{/.test(lines[i])) continue;
+    // 开闭同行（单行对象字面量）时，括号深度会立刻归零 —— 必须先就地取键，
+    // 否则 `execute: () => ({ a: 1, c: 2 })` 这种写法一个键都收不到。
+    {
+      const open = lines[i].indexOf("{");
+      const close = lines[i].lastIndexOf("}");
+      if (open >= 0 && close > open) {
+        const inner = lines[i].slice(open + 1, close);
+        if (!inner.includes("{")) {
+          for (const m of inner.matchAll(/([A-Za-z_$][\w$]*)\s*:/g)) keys.add(m[1]);
+          continue;
+        }
+      }
+    }
     let depth = 0;
     for (let j = i; j < lines.length; j += 1) {
       const line = lines[j];
