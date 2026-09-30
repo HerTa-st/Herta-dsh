@@ -385,3 +385,155 @@ export function createPlaybackQueue<T = unknown>(
     },
   };
 }
+
+/**
+ * 「念完一段，再念下一段」的播放队列。
+ *
+ * 与上面那个只差一条：**新的一条 utterance 不打断正在播的那条**，而是排到它后面。
+ *
+ * 为什么要第二个实现：`createPlaybackQueue` 的「新的打断旧的」是给「自动念回复」
+ * 写的 —— 那种场景下新的一条总是更新的、更该听。放到**读一段话**上就反了：
+ * 她刚开口，下一轮的话就到了，于是每一句都被掐掉半截，听起来像结巴。
+ *
+ * 打断这件事因此收归调用方：用户点哪一段，界面自己先 `stopAll()` 再送新的合成。
+ * 换句话说 —— **打断只由人发起**。
+ *
+ * 排序仍是「先按 utterance 首见顺序，再按 seq」，所以同一条内部照旧按段序播；
+ * 跨越 utterance 只是排队，不再互相掐。
+ *
+ * 这份实现同时在 TS 源码和打包产物里 —— 所以**刻意不写类型注解**，
+ * 两边同一份文本，语义不会漂。
+ */
+export function createSerialPlaybackQueue(options) {
+  const onPlay = options.onPlay;
+  const onStop = options.onStop;
+  const log = options.log ?? (() => {});
+
+  /** 待播表：跨 utterance 的全局顺序，不再是「当前这条的 seq 集合」。 */
+  let pending = [];
+  /** 正在播的那条；空闲时 null。 */
+  let playing = null;
+  /** utterance 的首见顺序 —— 现在只用来**排序**，不再用来判断该不该打断。 */
+  let order = new Map();
+  let orderSeq = 0;
+  /**
+   * 被 `stopAll()` 划到线下的名次：落在它和它之前的 utterance，迟到的帧一律丢。
+   *
+   * 为什么需要这条线：宿主的合成是**一段一段串着推**的（一条 utterance 十段，
+   * 就是十次云端请求，一次接一次）。`stopAll()` 清得掉已经排进待播表的，清不掉
+   * **还在飞的** —— 那些帧会在接下来十几秒里陆续到达，一看队列空了就接上播。
+   * 表现就是：点了一段，听到的却是别处的旧内容，而且点三次听到三个不同的开头。
+   */
+  let cutoffOrder = 0;
+  /** 已收过的 `${id}#${seq}`。去重是跨 utterance 的，因为待播表也是。 */
+  let received = new Set();
+  const RECEIVED_LIMIT = 4096;
+
+  const rankOf = (item) => (order.get(item.utteranceId) ?? 0) * 1e6 + item.seq;
+
+  /** 交付待播表里最靠前的那条。只在空闲时调用。 */
+  function drain() {
+    if (playing !== null || pending.length === 0) return;
+    let best = 0;
+    for (let i = 1; i < pending.length; i += 1) {
+      if (rankOf(pending[i]) < rankOf(pending[best])) best = i;
+    }
+    const item = pending.splice(best, 1)[0];
+    playing = item;
+    try {
+      onPlay(item);
+    } catch (error) {
+      // 播放方抛错不该把队列卡死 —— 当成「播完了」推进。
+      log(`onPlay 抛错（${item.utteranceId}#${item.seq}）：${String(error)}`);
+      playing = null;
+      drain();
+    }
+  }
+
+  function fireStop(id) {
+    if (onStop === undefined) return;
+    try {
+      onStop(id);
+    } catch (error) {
+      log(`onStop 抛错（${id}）：${String(error)}`);
+    }
+  }
+
+  return {
+    push(utteranceId, seq, payload) {
+      if (typeof utteranceId !== "string" || utteranceId === "") return "stopped";
+      if (typeof seq !== "number" || !Number.isFinite(seq)) return "stopped";
+      const seen = order.get(utteranceId);
+      if (seen !== undefined && seen <= cutoffOrder) return "duplicate";
+      if (seen === undefined) {
+        orderSeq += 1;
+        order.set(utteranceId, orderSeq);
+      }
+      const key = `${utteranceId}#${seq}`;
+      if (received.has(key)) return "duplicate";
+      if (received.size >= RECEIVED_LIMIT) received = new Set();
+      received.add(key);
+
+      pending.push({ utteranceId, seq, payload });
+      if (playing === null) {
+        drain();
+        if (playing !== null && playing.utteranceId === utteranceId && playing.seq === seq) {
+          return "playing";
+        }
+      }
+      return "queued";
+    },
+
+    complete(utteranceId, seq) {
+      if (playing === null || playing.seq !== seq || playing.utteranceId !== utteranceId) return;
+      playing = null;
+      drain();
+    },
+
+    /** 摘掉一条 utterance：待播里的一起清，正在播的就掐掉。 */
+    stop(utteranceId) {
+      pending = pending.filter((it) => it.utteranceId !== utteranceId);
+      if (playing === null || playing.utteranceId !== utteranceId) return;
+      playing = null;
+      fireStop(utteranceId);
+      drain();
+    },
+
+    /**
+     * 掐掉一切 —— 正在播的、以及所有待播的。
+     *
+     * **这是唯一会打断播放的入口**，而它只该由「用户点了某一段」来调。
+     */
+    stopAll() {
+      const id = playing !== null ? playing.utteranceId : "";
+      pending = [];
+      playing = null;
+      // 划线：此刻**已经见过**的 utterance 全部作废，它们的迟到帧不再放进来。
+      // 点击之后才产生的那条是「没见过」的，名次更大，照常通过。
+      cutoffOrder = orderSeq;
+      // **无条件**叫这一声，空 id 也一样。队列只认得**它自己放过的**音频，
+      // 而命中档案的那一段是直接送喇叭的、从没经过这里。把「手上没人」读成
+      // 「没在响」，那段就会在下一次点击底下继续说 —— 听上去就是「它把旧的
+      // 念完才轮到新的」。空 id 的含义归 onStop 那侧：停全部。
+      fireStop(id);
+    },
+
+    reset() {
+      pending = [];
+      playing = null;
+    },
+
+    state() {
+      const current =
+        playing !== null ? playing.utteranceId : pending.length > 0 ? pending[0].utteranceId : null;
+      return {
+        current,
+        playing: playing !== null ? playing.seq : null,
+        queued: pending
+          .filter((it) => it.utteranceId === current)
+          .map((it) => it.seq)
+          .sort((a, b) => a - b),
+      };
+    },
+  };
+}

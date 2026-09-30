@@ -142,6 +142,16 @@ console.log("herta-settings");
   check("path 字段认空串与普通路径", isManagedValue("workspace", "") && isManagedValue("workspace", "E:\\ws"));
   check("path 字段拒非字符串", !isManagedValue("workspace", 3) && !isManagedValue("workspace", null));
 
+  // `text` 与 `path` **同一套校验**，区别只在界面：text 渲染成纯文本框（无工作区选择器、
+  // 用字段自己的 placeholder），path 才给工作区建议。加这一条是为了钉住那条接缝 ——
+  // 哪天有人把 text 的校验改了，path 不该跟着变。
+  check("text 字段与 path 同口径（认字符串、拒非字符串）", (() => {
+    const textField = FIELD_NAMES.find((n) => FIELDS[n].kind === "text");
+    if (textField === undefined) return true; // 没有 text 字段时跳过，不误报
+    return isManagedValue(textField, "abc") && isManagedValue(textField, "")
+      && !isManagedValue(textField, 3) && !isManagedValue(textField, null);
+  })());
+
   check("数值字段认范围内", isManagedValue("voiceVolume", 0) && isManagedValue("voiceVolume", 100) && isManagedValue("voiceVolume", 55));
   check("数值字段拒越界", !isManagedValue("voiceVolume", -1) && !isManagedValue("voiceVolume", 101));
   check("数值字段拒字符串与 NaN/Infinity", !isManagedValue("voiceVolume", "50") && !isManagedValue("voiceVolume", NaN) && !isManagedValue("voiceVolume", Infinity));

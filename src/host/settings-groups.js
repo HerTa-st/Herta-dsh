@@ -31,6 +31,11 @@ export const SETTINGS_GROUPS = Object.freeze([
     hint: "这四个值都是宿主真在读的，改完立刻生效。静音只决定「听不听得见」，不决定要不要花钱合成。",
     fields: Object.freeze(["voiceEngine", "realtimeVoice", "voiceMuted", "voiceVolume"]),
   }),
+  Object.freeze({
+    title: "Fish 语音",
+    hint: "只在「语音引擎」选 fish 时生效。这里的值**优先**于外部 fish_config.json —— 那边退化成「没设过时的兜底」。",
+    fields: Object.freeze(["fishRef", "fishSpeed", "fishEffect", "fishPreset"]),
+  }),
   Object.freeze({ title: "差分协处理器", fields: Object.freeze(["deviceScene"]) }),
 ]);
 

@@ -48,7 +48,7 @@ import { SETTINGS_GROUPS } from "../host/settings-groups.js";
 // 播放队列状态机。**零 import** 是刻意的 —— 它能被 Node 直接单测
 // （`scripts/test-minimax-pcm.mjs`），所以「顺序 / 去重 / 打断 / 停止」这些最容易
 // 写错的地方不靠浏览器验证。
-import { createPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
+import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
 
 /** Cordis 插件名，与 cordis.patch.yml 里的 loader 条目 id 一致。 */
 const name = "herta";
@@ -513,6 +513,14 @@ let voiceAudio: { ctx: AudioContext; gain: GainNode } | null = null;
 const voiceSources = new Map<string, Set<AudioBufferSourceNode>>();
 /** 每条 utterance 下一次该排在哪（同一句的多段首尾相接，不叠声）。 */
 const voiceCursor = new Map<string, number>();
+/**
+ * **[点哪段读哪段]** 全部音频共用的一个游标。
+ *
+ * 上面那个 `voiceCursor` 是**按 utterance** 存的，跨不过条：新一条 utterance
+ * 拿不到前一条的结束时刻，于是 `at = currentTime` —— 直接盖在还在说的那段上面，
+ * 听起来就是「同时念两段话」。全局游标把这件事收成一条时间轴，谁也盖不住谁。
+ */
+let voiceEndAt = 0;
 /** 游标表的上界。只防内存（一页开着跑一整天）：过线整体清掉，旧游标不再需要。 */
 const VOICE_CURSOR_LIMIT = 64;
 /** 已经申请过「用户一动手就 resume」的监听。 */
@@ -621,9 +629,12 @@ function stopLocalVoice(utteranceId?: string): void {
     voiceSources.delete(id);
     voiceCursor.delete(id);
   }
+  // 一条都不剩了：全局游标归零 —— 下一个到达的该**立刻**出声，
+  // 而不是排在一个已经不存在的时间点上。
+  if (voiceSources.size === 0) voiceEndAt = 0;
 }
 
-/** 一条 PCM 交给 WebAudio：调度到 `max(now, 该 utterance 的游标)`，首尾相接。 */
+/** 一条 PCM 交给 WebAudio：调度到 `max(now, 全局游标)` —— 所有音频首尾相接，不叠声。 */
 function playLocalVoice(
   utteranceId: string,
   seq: number,
@@ -646,7 +657,7 @@ function playLocalVoice(
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(voiceAudio!.gain);
-    const at = Math.max(ctx.currentTime, voiceCursor.get(utteranceId) ?? 0);
+    const at = Math.max(ctx.currentTime, voiceEndAt);
     let set = voiceSources.get(utteranceId);
     if (set === undefined) {
       set = new Set();
@@ -670,6 +681,7 @@ function playLocalVoice(
     source.start(at);
     if (!voiceCursor.has(utteranceId) && voiceCursor.size >= VOICE_CURSOR_LIMIT) voiceCursor.clear();
     voiceCursor.set(utteranceId, at + buffer.duration);
+    voiceEndAt = at + buffer.duration;
     markMinimax("minimaxAudioPlays", ((globalThis.__DSH_HERTA__?.minimaxAudioPlays as number) ?? 0) + 1);
     markMinimax("minimaxAudioLast", `#${samples.length}/${sampleRate}Hz`);
     // `onended` 在某些情况下可能不来（上下文被回收、调度被掐），到点强制推进队列，
@@ -687,11 +699,7 @@ function playLocalVoice(
  *
  * 只在**没有 iframe** 的时候真的被推东西；有 iframe 时它一个单元都不会收到。
  */
-const localQueue = createPlaybackQueue<{
-  samples: Int16Array;
-  sampleRate: number;
-  durationMs: number;
-}>({
+const localQueue = createSerialPlaybackQueue({
   onPlay: (item) => {
     playLocalVoice(
       item.utteranceId,
@@ -702,7 +710,10 @@ const localQueue = createPlaybackQueue<{
     );
   },
   onStop: (id) => {
-    stopLocalVoice(id);
+    // 空 id = 「什么都别响了」。需要这条分支，是因为命中档案的那一段是**直接
+    // 送喇叭**的，从没经过队列，队列叫不出它的名字。
+    if (id === "") stopLocalVoice();
+    else stopLocalVoice(id);
   },
 });
 
@@ -718,6 +729,8 @@ function onMiniMaxPcm(frame: {
   samplesB64?: unknown;
   sampleRate?: unknown;
   durationMs?: unknown;
+  /** 合成这段音频用的**那一段文字**（宿主一直在推，只是以前没人用）。 */
+  text?: unknown;
 }): void {
   const utteranceId = typeof frame.utteranceId === "string" ? frame.utteranceId : "";
   const seq = typeof frame.seq === "number" ? frame.seq : 0;
@@ -735,6 +748,21 @@ function onMiniMaxPcm(frame: {
     return;
   }
   markMinimax("minimaxLastFrame", `${utteranceId}#${seq} ${samples.length} samples`);
+
+  // [点哪段读哪段] 先按**它自己的文字**归档，再决定往哪放。
+  // 放在这里而不是下面：整机视图那条路绕过 localQueue 直接推 iframe，
+  // 但它同样该进档案 —— 档案是两条路共用的。
+  rememberSpokenAudio(frame.text, samples, sampleRate, durationMs);
+  // [点哪段读哪段] 这一帧来自**我们**发出去的某次 say 请求：按当时报上去的那段
+  // 文字归档 —— 那正是下一次点击会递上来的钥匙。可能有好几笔请求同时在飞，
+  // 所以整张表都要比一遍。
+  for (const [token, askedText] of awaitingSpokenTexts) {
+    if (utteranceId.indexOf(token) >= 0) {
+      rememberSpokenAudio(askedText, samples, sampleRate, durationMs);
+      awaitingSpokenTexts.delete(token);
+      break;
+    }
+  }
 
   // 甲方案（有 iframe）：只推给它。**不**自己再放一遍 —— 那就是双声。
   // 形状逐字是 `{ kind:"tts", utteranceId, seq, samples, sampleRate, durationMs }`，
@@ -785,13 +813,21 @@ async function refreshMiniMax(): Promise<Record<string, unknown> | null> {
   return miniMaxState;
 }
 
-/** 发一个动作（目前只有 adopt = 重新认领），把宿主回的快照回填。 */
-async function postMiniMaxAction(action: string): Promise<Record<string, unknown> | null> {
+/**
+ * 发一个动作，把宿主回的快照回填。
+ *
+ * `extra` 是给 `say` 用的 —— 那一个动作要带正文（点的是哪段，就送哪段）。
+ * 其余动作（adopt / reset / preview / warm）不带负载，行为不变。
+ */
+async function postMiniMaxAction(
+  action: string,
+  extra?: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
   try {
     const res = await fetch(MINIMAX_STATE_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action, ...(extra ?? {}) }),
     });
     if (res.ok) miniMaxState = (await res.json()) as Record<string, unknown>;
     else markMinimax("minimaxActionError", `${action} → HTTP ${res.status}`);
@@ -1022,6 +1058,15 @@ function ensureShadowMount(host: HTMLElement): HTMLElement {
     style.textContent = hertaCss;
     shadow.append(style);
   }
+  // [点哪段读哪段] 可点的是**气泡自己的盒子**，不是它所在的那一整行。
+  // 写进 CSS 是为了让指针和判定说同一件事 —— 否则鼠标在空白处伸出手，
+  // 点下去却被处理器拒绝。
+  if (shadow.querySelector("style[data-herta-click]") === null) {
+    const clickStyle = document.createElement("style");
+    clickStyle.setAttribute("data-herta-click", "");
+    clickStyle.textContent = ".message-bubble,.code-standalone{cursor:pointer}";
+    shadow.append(clickStyle);
+  }
   const existing = shadow.querySelector("[data-herta-mount]");
   if (existing instanceof HTMLElement) return existing;
   const mount = document.createElement("div");
@@ -1030,22 +1075,154 @@ function ensureShadowMount(host: HTMLElement): HTMLElement {
   return mount;
 }
 
-/** 把所有气泡渲染成 Herta 的组件树。 */
+/**
+ * 「点哪段，读哪段」—— 唯一由**人**发起的打断入口。
+ *
+ * 两件事，顺序不能换：
+ *   1. `stopAll()` 先把正在播的、和排着队的全掐掉 —— 用户点了新的，旧的
+ *      就该立刻让位，而不是念完再说；
+ *   2. 再把这段文字送去合成，音频照旧从 SSE 回来，队列接着播。
+ *
+ * 先掐后送是有意的：合成要一秒上下，先送再掐会让旧的那句多念出一个字。
+ */
+/**
+ * [点哪段读哪段] 按「合成它用的那段文字」归档的音频。
+ *
+ * 一次云端往返实测约 4.8 秒 —— 所以「点一段，立刻听见」只能靠**记忆**：只要
+ * 那段话被合成过，就不该再去要第二遍。而它通常被合成过：每一帧 `tts` 都带着
+ * 自己那一段文字（宿主一直在推，只是这边以前没接），开了自动念回复就更是整条
+ * 回复都念过一遍 —— 那些采样以前播完就丢了。
+ *
+ * 键是文字；限额两道（条数 + 采样总数），因为 `Int16Array` 两个字节才一个采样，
+ * 按条存长回复很能吃内存。
+ */
+const spokenAudio = new Map<
+  string,
+  { samples: Int16Array; sampleRate: number; durationMs: number }
+>();
+const SPOKEN_AUDIO_LIMIT = 64;
+const SPOKEN_AUDIO_MAX_SAMPLES = 15_000_000;
+let spokenAudioSamples = 0;
+
+function rememberSpokenAudio(
+  text: unknown,
+  samples: Int16Array,
+  sampleRate: number,
+  durationMs: number,
+): void {
+  const key = String(text ?? "").trim();
+  if (key === "" || samples.length === 0) return;
+  const prev = spokenAudio.get(key);
+  if (prev !== undefined) spokenAudioSamples -= prev.samples.length;
+  if (spokenAudio.size >= SPOKEN_AUDIO_LIMIT) {
+    spokenAudio.clear();
+    spokenAudioSamples = 0;
+  }
+  spokenAudio.set(key, { samples, sampleRate, durationMs });
+  spokenAudioSamples += samples.length;
+  // 超了从最旧的开始丢，但**至少留一条** —— 否则刚存进来的会被自己挤出去。
+  while (spokenAudioSamples > SPOKEN_AUDIO_MAX_SAMPLES && spokenAudio.size > 1) {
+    const oldest = spokenAudio.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    const victim = spokenAudio.get(oldest);
+    spokenAudio.delete(oldest);
+    if (victim !== undefined) spokenAudioSamples -= victim.samples.length;
+  }
+}
+
+function recallSpokenAudio(text: string) {
+  return spokenAudio.get(text.trim());
+}
+
+/**
+ * [点哪段读哪段] 还在飞的 say 请求：令牌 → 它将来归档用的那段文字。
+ *
+ * 是**表**不是单个格子。长段合成要几十秒，这中间你要是点了别的，单个格子会被
+ * 顶掉 —— 长的那条回来就成了「无人认领的帧」，被直接放掉，于是它永远进不了
+ * 档案，下次再点还得重来。
+ */
+const awaitingSpokenTexts = new Map<string, string>();
+
+async function speakText(text: string): Promise<void> {
+  const body = text.trim();
+  if (body === "") return;
+  localQueue.stopAll();
+  const hit = recallSpokenAudio(body);
+  if (hit !== undefined) {
+    // 直接送喇叭：没有往返，也就没有等的理由。上面那句 stopAll() 已经把全局
+    // 游标归零，所以它是「现在」响，而不是排在谁后面。
+    playLocalVoice(`cached-${Date.now()}`, 0, hit.samples, hit.sampleRate, hit.durationMs);
+    return;
+  }
+  const token = `c${Date.now().toString(36)}${Math.floor(Math.random() * 1679616).toString(36)}`;
+  awaitingSpokenTexts.set(token, body);
+  // `exact` 要宿主把整段**一次**合成，而不是照常按句切碎。两个好处：
+  // 等待从「几趟云端往返」降到一趟；而且档案的钥匙正好是整段本身 ——
+  // 也就是下一次点击它会递上来的那把。
+  await postMiniMaxAction("say", { text: body, exact: true, token });
+}
+
+/**
+ * 这一下，点在**哪一段**上？
+ *
+ * `HertaBubble` 内部按 `segmentSpeech` 把一条消息拆成一段一个
+ * `div.message-row.herta-row`（空行分段、围栏块单列），所以指针底下那个元素
+ * 就能唯一定位到段 —— 这正是「点哪段读哪段」缺的那一环。
+ *
+ * 挂 onClick 的那层壳**铺满整行**，所以还得先问一句：这一下**落进气泡自己的
+ * 盒子了吗**（话语是 `.message-bubble`，代码块是 `.code-standalone`）。
+ * 落在盒子外面返回 `null` —— 那是**明确的「不算」**，和 `fallback`（算，但
+ * 定位不到段，退回整条）是两回事。宁可念多，不要念错。
+ */
+function paragraphUnderPointer(event: { target?: unknown } | null, fallback: string): string | null {
+  try {
+    const target = event?.target as { closest?: (sel: string) => Element | null } | null | undefined;
+    if (typeof target?.closest !== "function") return fallback;
+    const bubble = target.closest(".message-bubble") ?? target.closest(".code-standalone");
+    if (bubble === null) return null;
+    const row = bubble.closest(".message-row") ?? bubble;
+    const body = row.querySelector(".message-text") ?? row.querySelector(".code-block") ?? bubble;
+    const text = (body.textContent ?? "").trim();
+    return text === "" ? fallback : text;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * 把所有气泡渲染成 Herta 的组件树。
+ *
+ * 她的话外面包了一层可点的壳：点一下就重念那一段。
+ * 壳加在外层而不是改 `HertaBubble` —— 那是 `@gui` 的组件，住在 Herta 源码树里，
+ * 不归这份代码管，也没有留 onClick 的位置。
+ */
 function renderBubbleList(bubbles: readonly Bubble[]): unknown {
-  const children = bubbles.map((b, i) =>
-    b.role === "user"
-      ? createElement(UserBubble, {
-          key: `${i}-user`,
-          text: b.text,
-          ...(b.at === undefined ? {} : { at: b.at }),
-        })
-      : createElement(HertaBubble, {
-          key: `${i}-herta`,
-          text: b.text,
-          lang: "zh",
-          ...(b.at === undefined ? {} : { at: b.at }),
-        }),
-  );
+  const children = bubbles.map((b, i) => {
+    if (b.role === "user") {
+      return createElement(UserBubble, {
+        key: `${i}-user`,
+        text: b.text,
+        ...(b.at === undefined ? {} : { at: b.at }),
+      });
+    }
+    return createElement(
+      "div",
+      {
+        key: `${i}-herta`,
+        onClick: (event: { target?: unknown }) => {
+          const hit = paragraphUnderPointer(event, b.text);
+          if (hit === null) return; // 点在气泡旁边的空白：不算点她
+          void speakText(hit);
+        },
+        title: "点一下，读这一段",
+      },
+      createElement(HertaBubble, {
+        text: b.text,
+        lang: "zh",
+        ...(b.at === undefined ? {} : { at: b.at }),
+      }),
+    );
+  });
   return createElement("div", null, children);
 }
 
@@ -1722,7 +1899,8 @@ const ENUM_LABELS = {
   locale: { "": "跟随系统", zh: "中文", en: "English" },
   interactionLanguage: { follow: "跟随界面", zh: "中文", en: "English" },
   theme: { system: "跟随系统", light: "浅色", dark: "深色" },
-  voiceEngine: { local: "本地模型", minimax: "MiniMax 克隆", mimo: "MiMo 合成" },
+  voiceEngine: { local: "本地模型", minimax: "MiniMax 克隆", fish: "Fish Audio 克隆", mimo: "MiMo 合成" },
+  fishPreset: { terminal_textured: "带噪声", terminal: "纯净" },
   backendThinking: { low: "low", high: "high", max: "max" },
   backendContract: { standard: "standard", minimal: "minimal" },
   modelsActor: { "deepseek-v4-pro": "V4 Pro", "deepseek-flash": "V4.1 Flash" },
@@ -1747,6 +1925,10 @@ const FIELD_HINTS = {
   realtimeVoice: "「自动念回复」的总开关。关掉就不再自动把回复送去合成（不再花钱）；herta_say 与「试听」不受它管。",
   voiceMuted: "关掉她所有的语音播放。立刻生效。",
   voiceVolume: "语音播放的音量（0–100）。立刻生效。",
+  fishRef: "fish.audio 上的音色模型 ID。默认是大黑塔；换成别的角色只要改这一行。",
+  fishSpeed: "语速。1 是模型原始速度。",
+  fishEffect: "信道音效：400Hz–5.5kHz 带通 + 饱和，更像游戏里透过终端说话。关掉就是 Fish 原声。",
+  fishPreset: "terminal_textured 多一层跟着语音走的噪声；terminal 是同一套滤波但不加噪声。",
   workspace: "整机的工作区根目录（绝对路径）。",
   dreamEnabled: "她空闲时自己写废案。",
   backendThinking: "板砖的推理档位。",
@@ -1758,9 +1940,13 @@ const FIELD_HINTS = {
 /**
  * 逐档的**现状**（是行为，不是偏好）—— 引擎行按当前选中值显示那一句。
  *
- * 三档里只有两档会真的出声：`local` 直连本地模型、`minimax` 云端优先（失败回落
- * 本地）。`mimo` 的合成器**还没有调用点**，选它不会发声 —— 这一句必须写出来，
- * 而不是把选项藏起来（用户决策：保留三档 + 逐档标注）。
+ * 四档里三档会真的出声：`local` 直连本地模型、`minimax` 云端优先（失败回落
+ * 本地）、`fish` 走 Fish Audio 云端。`mimo` 的合成器**还没有调用点**，选它不会
+ * 发声 —— 这一句必须写出来，而不是把选项藏起来（用户决策：保留全部档位 + 逐档标注）。
+ *
+ * `fish` 与 `minimax` 的区别在**失败时的行为**：`minimax` 失败会静默回落本地，
+ * `fish` 失败**不回落**（用户明确选了这一档，换成别的声音比没声音更糟）——
+ * 理由进 `engineNote`，用户看得见。
  *
  * 本地那一档的代价写在第二句里，数字是 2026-09-28 在本机直接跑 worker 量的：
  *   · **冷启动**（加载 addon + 85 MB 模型）2.7–4.4 s，其中模型加载 2.6–3.7 s；
@@ -1774,6 +1960,8 @@ const ENGINE_NOTES: Record<string, string> = {
     "离线合成：不花钱、不需要网络。合成进程会常驻（切到这一档就先预热），热起来后每句只付推理；首次、或空闲回收之后，要重新加载模型约 3 秒。",
   minimax:
     "云端合成：边写边念。云端不可用（没密钥 / 没认领到克隆 / 被拒绝）时自动回落本地模型，回落原因写在下面「MiniMax 语音」那一行。",
+  fish:
+    "云端合成（Fish Audio）：44.1kHz，音色是站上训练好的大黑塔角色模型。需要联网，台词会传到 fish.audio；参数在下面「Fish 语音」那一组里调。",
   mimo: "合成器尚未接线（宿主侧 mimo-tts.js 还没有调用点），选它不会发声。",
 };
 
@@ -1783,6 +1971,65 @@ function engineLabel(engine: unknown): string {
   const labels = (ENUM_LABELS as Record<string, Record<string, string>>).voiceEngine ?? {};
   return labels[value] ?? value;
 }
+
+/**
+ * 语音引擎那一行的**结构化文案**。
+ *
+ * ## 为什么不再用段落
+ *
+ * 原来这一行是三段散文（提示 31 字 + 引擎说明 69~84 字 + 本地状态 55 字），
+ * 堆在卡片左半边那一列里（宽约 550px）—— 结果折成 4~6 行，**堆成一条竖向长条**，
+ * 右边控件下方留一大片空白，整行高度还跟别的设置行对不齐。
+ *
+ * 改法：
+ *   · `badges`  —— 3 个短标签，一行扫完，替代那段 84 字的说明；
+ *   · `summary` —— 一句不长于一行的话，补充标签装不下的语义；
+ *   · `facts`   —— 「标签 / 值」小格，展开后**整宽三列**排开，不再是横贯长句。
+ *
+ * 文案自己也要短。第一版 `fish` 那档写了 84 字，是当时最长的一条，
+ * **那是这段 UI 变难看的直接原因**。
+ */
+const ENGINE_BADGES: Record<string, string[]> = {
+  local: ["离线", "无需联网", "零成本"],
+  minimax: ["云端", "边写边念", "失败回落"],
+  fish: ["云端", "44.1kHz", "需联网"],
+  mimo: ["未接线", "不发声"],
+};
+
+const ENGINE_SUMMARY: Record<string, string> = {
+  local: "在本机跑，合成进程常驻，热起来后比播放还快。",
+  minimax: "MiniMax 合成；不可用时自动回落本地模型，原因写在下面。",
+  fish: "Fish Audio 合成，音色是站上训练好的角色模型。",
+  mimo: "宿主侧还没有调用点，选它不会出声。",
+};
+
+const ENGINE_FACTS: Record<string, [string, string][]> = {
+  local: [
+    ["需要网络", "否"],
+    ["采样率", "24 kHz"],
+    ["音色来源", "模型内置（不可换）"],
+    ["开销", "零成本"],
+  ],
+  minimax: [
+    ["需要网络", "是"],
+    ["失败时", "回落本地模型"],
+    ["需要密钥", "MINIMAX_API_KEY"],
+    ["克隆音色", "需套餐"],
+  ],
+  fish: [
+    ["需要网络", "是"],
+    ["采样率", "44.1 kHz"],
+    ["台词上传", "传到 fish.audio"],
+    ["音色来源", "站上训练的角色模型"],
+    ["可换音色", "是"],
+    ["参数位置", "下面「Fish 语音」组"],
+  ],
+  mimo: [
+    ["需要网络", "—"],
+    ["状态", "合成器未接线"],
+    ["能否发声", "否"],
+  ],
+};
 
 /** 选择器要用的空数组常量：引用必须稳定，否则 useSyncExternalStore 会自激。 */
 const EMPTY_WORKSPACES = Object.freeze([]);
@@ -2229,6 +2476,8 @@ function createSettingsSection(ui: unknown) {
     const [mini, setMini] = useState<Record<string, unknown> | null>(miniMaxState);
     const [busy, setBusy] = useState(false);
     const [result, setResult] = useState<string | null>(null);
+    /** 「详情」展开与否。默认收起 —— 这一行的高度不该由最长的那段文案决定。 */
+    const [detailOpen, setDetailOpen] = useState(false);
 
     useEffect(() => {
       const sub = (next: unknown): void => {
@@ -2301,36 +2550,86 @@ function createSettingsSection(ui: unknown) {
       });
     };
 
-    return createElement(
-      "div",
-      { style: ROW_STYLE },
+    /**
+     * 一行里的窄元素：小标签（徽章）。
+     *
+     * 用 `inline-block` + 圆角，视觉上跟按钮区分开（按钮有边框，徽章只有底色）。
+     */
+    const badge = (text: string, i: number): unknown =>
       createElement(
-        "div",
-        { style: { flex: "1 1 auto", minWidth: 0 } },
-        createElement("div", { style: LABEL_STYLE }, FIELDS.voiceEngine.label),
-        createElement("div", { style: HINT_STYLE }, FIELD_HINTS.voiceEngine),
-        createElement("div", { style: HINT_STYLE }, ENGINE_NOTES[engine] ?? ""),
-        // 本地就绪**常显**：minimax 那档也会在云端不可用时回落到本地模型，
-        // 所以"本地模型装没装、运行时探测过没有、合成进程热没热"对两个档位都是有用的事实。
+        "span",
+        {
+          key: `b${i}`,
+          style: {
+            display: "inline-block",
+            padding: "1px 8px",
+            borderRadius: 9,
+            fontSize: 11,
+            lineHeight: "17px",
+            background: "var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.14))",
+            color: "var(--dsw-alias-label-secondary)",
+            whiteSpace: "nowrap",
+          },
+        },
+        text,
+      );
+
+    /** 展开后的「标签 / 值」小格。整宽三列 —— 不是横贯的长句。 */
+    const facts = [
+      ...(ENGINE_FACTS[engine] ?? []),
+      // 本机事实：两个云端档也会回落本地，所以这几项对它们同样有用。
+      ["本地模型", phaseText] as [string, string],
+      ["运行时", runtimeReady ? "可用" : "缺失"] as [string, string],
+      ["合成进程", workerText] as [string, string],
+    ];
+
+    const factGrid = createElement(
+      "div",
+      {
+        style: {
+          marginTop: 10,
+          padding: "10px 12px",
+          borderRadius: 8,
+          background: "var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.08))",
+          display: "grid",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          columnGap: 16,
+          rowGap: 10,
+        },
+      },
+      ...facts.map(([k, v], i) =>
         createElement(
           "div",
-          { style: HINT_STYLE },
-          `本地模型：${phaseText}　·　运行时：${runtimeReady ? "可用" : "缺失或未探测通过"}`
-            + `　·　合成进程：${workerText}`
-            + (phase === "absent" || phase === "failed" ? "（在「整机动作 › 本地语音模型」里下载）" : ""),
+          { key: `f${i}`, style: { minWidth: 0 } },
+          createElement(
+            "div",
+            { style: { fontSize: 11, lineHeight: "16px", color: "var(--dsw-alias-label-secondary)" } },
+            k,
+          ),
+          createElement(
+            "div",
+            { style: { fontSize: 12, lineHeight: "18px", color: "var(--dsw-alias-label-primary)", wordBreak: "break-word" } },
+            v,
+          ),
         ),
-        props.muted
-          ? createElement(
-              "div",
-              { style: { ...HINT_STYLE, color: "var(--dsw-alias-label-warning, #b7791f)" } },
-              "当前是静音，试听不会出声。",
-            )
-          : null,
-        result === null ? null : createElement("div", { style: HINT_STYLE }, result),
       ),
+    );
+
+    return createElement(
+      "div",
+      // 整行改成**纵向三段**，不再「左文字 | 右控件」两列 —— 文字因此拿到整宽，
+      // 同样的字数从 6 行降到 1~2 行，右侧控件下方也不会再留空白。
+      { style: { display: "block" } },
+
+      // ── ① 标题 + 控件（同一行，垂直居中对齐） ──
       createElement(
         "div",
-        { style: { flex: "0 0 auto", display: "grid", gap: 6, justifyItems: "end" } },
+        { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+        createElement(
+          "div",
+          { style: { ...LABEL_STYLE, flex: "1 1 auto", minWidth: 0 } },
+          FIELDS.voiceEngine.label,
+        ),
         createElement(EnumControl, {
           field: "voiceEngine",
           value: props.value,
@@ -2360,6 +2659,53 @@ function createSettingsSection(ui: unknown) {
             )
           : null,
       ),
+
+      // ── ② 徽章摘要 + 「详情」开关（整宽一行） ──
+      createElement(
+        "div",
+        {
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flexWrap: "wrap",
+            marginTop: 8,
+            paddingTop: 8,
+            borderTop: "1px solid var(--dsw-alias-border-l)",
+          },
+        },
+        ...(ENGINE_BADGES[engine] ?? []).map(badge),
+        createElement(
+          "span",
+          { style: { ...HINT_STYLE, marginTop: 0, flex: "1 1 auto", minWidth: 0 } },
+          ENGINE_SUMMARY[engine] ?? "",
+        ),
+        createElement(
+          "button",
+          {
+            type: "button",
+            style: {
+              ...ACTION_BUTTON_STYLE,
+              padding: "2px 8px",
+              fontSize: 12,
+            },
+            onClick: () => setDetailOpen((v: boolean) => !v),
+          },
+          detailOpen ? "收起详情" : "详情",
+        ),
+      ),
+
+      // ── ③ 展开后的事实网格 ──
+      detailOpen ? factGrid : null,
+
+      props.muted
+        ? createElement(
+            "div",
+            { style: { ...HINT_STYLE, color: "var(--dsw-alias-label-warning, #b7791f)" } },
+            "当前是静音，试听不会出声。",
+          )
+        : null,
+      result === null ? null : createElement("div", { style: HINT_STYLE }, result),
     );
   }
 
@@ -2543,8 +2889,20 @@ function createSettingsSection(ui: unknown) {
     );
   }
 
-  /** 路径输入：本地暂存草稿，失焦或回车才写（逐键写会把 profile 补丁刷爆）。 */
-  function WorkspaceInput(props: { value: string; disabled?: boolean; onCommit: (next: string) => void; useWorkspaces: any }): unknown {
+  /**
+   * 路径 / 文本输入：本地暂存草稿，失焦或回车才写（逐键写会把 profile 补丁刷爆）。
+   *
+   * `placeholder` 由字段表给（`kind: "text"` 的字段各写各的）；
+   * `useWorkspaces` **只在 `kind: "path"` 时传进来** —— 「音色模型 ID」这种
+   * 纯文本字段不该看到「从 DSH 已登记的工作区里选」那一块。
+   */
+  function WorkspaceInput(props: {
+    value: string;
+    disabled?: boolean;
+    onCommit: (next: string) => void;
+    placeholder?: string;
+    useWorkspaces: any;
+  }): unknown {
     const [draft, setDraft] = useState(props.value);
     useEffect(() => {
       // 外部值变了（例如从下面的建议里选了）就同步草稿。
@@ -2558,7 +2916,7 @@ function createSettingsSection(ui: unknown) {
         value: draft,
         disabled: props.disabled === true,
         spellCheck: false,
-        placeholder: "例如 D:\\项目\\我的仓库",
+        placeholder: props.placeholder ?? "例如 D:\\项目\\我的仓库",
         style: INPUT_STYLE,
         onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
         onKeyDown: (event: { key: string }) => {
@@ -2657,7 +3015,10 @@ function createSettingsSection(ui: unknown) {
           value: typeof value === "string" ? value : "",
           disabled,
           onCommit: (next: string) => setField(field, next),
-          useWorkspaces: props.useWorkspaces,
+          // `kind: "text"` 用字段自己的占位符；其余（`path`）保持原样。
+          placeholder: typeof spec.placeholder === "string" ? spec.placeholder : undefined,
+          // 只有路径字段才给工作区选择器 —— 模型 ID 那一类看了会莫名其妙。
+          useWorkspaces: spec.kind === "path" ? props.useWorkspaces : undefined,
         });
       }
       return createElement(Row, {
