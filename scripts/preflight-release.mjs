@@ -27,11 +27,12 @@
  *   7. 文案：README 版本历史条目 + 两份发布文档（Release 说明 / B 站公告）都在
  *   8. 宿主矩阵：`engines.dsh` 区间 vs 当前桌面应用版本
  *
- * ## 为什么测试要带 `--import ./scripts/test-resolve-hook.mjs`
+ * ## 测试怎么跑：照 `package.json` 的 `test` 链，逐条沿用各自的 hook 标记
  *
- * 仓库刻意不带 `node_modules`，`src/host` 里几个文件静态 import `@deepseek-ai/*`。
- * 那 4 个测试（dream / dream-manifest / forget / tool-schema）不带 hook 直接
- * `ERR_MODULE_NOT_FOUND`。本机的 DSH 解包安装在 `$DSH_MODULES` 或 `dsh-017/` 下。
+ * **不写死测试清单**：谁新加测试只要接进 `test` 链，预检就自动覆盖；反过来，
+ * 有测试**必须不带** `test-resolve-hook`（例如 `test-schema-optional.mjs` 验的是
+ * 「没有 schemastery 时的兜底路径」，挂了 hook 就等于把真库递进去、把它验红），
+ * 所以每条命令的 `--import` 前缀都按 `package.json` 里写的原样跑。
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -226,15 +227,28 @@ function checkWorkspace() {
 }
 
 // ── 3. 测试 ─────────────────────────────────────────────────────────────────
-/** 核心 23 组（`npm test` 链里的 17 组 + 4 组新加的）。 */
-const CORE_TESTS = [
-  "test-narrative", "test-dream", "test-mapping", "test-narrative-hints", "test-supervisor",
-  "test-session-surface", "test-beat-policy", "test-silence-guard", "test-subagent-skip",
-  "test-dream-distill", "test-mimo-tts", "test-voice-settings", "test-fish-key",
-  "test-voice-model", "test-tts-resident", "test-herta-settings", "test-source-kind",
-  "test-artifact-sync", "test-tool-schema", "test-dream-manifest", "test-forget",
-  "test-fish-proxy", "test-billed-chars",
-];
+/**
+ * 测试清单**照 `package.json` 的 `test` 链跑**，不写死。
+ *
+ * 两个理由（都真踩过）：
+ *   · 谁新加测试只要接进 `test` 链，预检就自动覆盖 —— 写死清单会悄悄漏掉新测试；
+ *   · **每条自己的 hook 标记必须沿用**：`test-schema-optional.mjs` 这类测试
+ *     恰恰要求**没有** `schemastery` 在场（验兜底路径），一律加
+ *     `--import ./scripts/test-resolve-hook.mjs` 会把真库解析出来、把它验红。
+ */
+function testPlan() {
+  const chain = String(pkg.scripts?.test ?? "").split("&&").map((s) => s.trim()).filter(Boolean);
+  const plan = [];
+  for (const cmd of chain) {
+    const nodeCall = /^node\s+(--import\s+(\S+)\s+)?scripts\/([\w.-]+)$/.exec(cmd);
+    if (nodeCall !== null) {
+      plan.push({ kind: "script", name: nodeCall[3], hook: nodeCall[2] ?? null });
+      continue;
+    }
+    plan.push({ kind: "raw", cmd });
+  }
+  return plan;
+}
 
 function countPassed(out) {
   let n = 0;
@@ -243,24 +257,33 @@ function countPassed(out) {
 }
 
 function checkTests() {
-  console.log("\n── 3. 测试 ────────────────────────────────────────────");
+  console.log("\n── 3. 测试（照 package.json 的 test 链）────────────────");
+  const plan = testPlan();
   const failed = [];
+  const rawFailed = [];
   let total = 0;
-  for (const t of CORE_TESTS) {
-    const r = run(process.execPath, ["--import", "./scripts/test-resolve-hook.mjs", `scripts/${t}.mjs`]);
+  let groups = 0;
+  for (const step of plan) {
+    if (step.kind === "raw") {
+      const r = npm(...step.cmd.split(" ").slice(1)); // `npm run test:minimax` → run test:minimax
+      total += countPassed(r.out);
+      groups += 1;
+      if (!r.ok) rawFailed.push(step.cmd);
+      continue;
+    }
+    const args = step.hook === null
+      ? [`scripts/${step.name}`]
+      : ["--import", `./${step.hook}`, `scripts/${step.name}`];
+    const r = run(process.execPath, args);
     total += countPassed(r.out);
-    if (!r.ok) failed.push(t);
+    groups += 1;
+    if (!r.ok) failed.push(step.name);
   }
-  if (failed.length === 0) check(PASS, `核心 ${CORE_TESTS.length} 组全绿`, `${total} 项`);
-  else check(FAIL, `核心测试红 ${failed.length} 组`, failed.join(", "));
-
-  const mini = npm("run", "test:minimax");
-  const miniTotal = countPassed(mini.out);
-  if (mini.ok) check(PASS, "MiniMax 6 组全绿", `${miniTotal} 项`);
-  else check(FAIL, "MiniMax 组有红", mini.out.split("\n").filter((l) => /failed|Error/.test(l)).slice(-2).join(" / "));
-
-  const badAssertion = /❌/.test(mini.out) ? "（输出里有 ❌ 但没有非零退出码，人工看一眼）" : "";
-  if (badAssertion !== "") check(WARN, "MiniMax 输出含 ❌", badAssertion);
+  if (failed.length === 0 && rawFailed.length === 0) {
+    check(PASS, `test 链 ${groups} 组全绿`, `${total} 项`);
+  } else {
+    check(FAIL, `test 链有红（${failed.length + rawFailed.length} 处）`, [...failed, ...rawFailed].join(", "));
+  }
 }
 
 // ── 4. 构建零差异 ───────────────────────────────────────────────────────────

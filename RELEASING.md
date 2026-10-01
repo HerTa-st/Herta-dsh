@@ -22,7 +22,7 @@
 | 本地更新插件 | `$env:DSH_PROFILE_DIR='C:\Users\梦源\.dsh\profiles\desktop'; node scripts/deploy.mjs`（镜像 lib/assets/preset/locale + 文档；逐字节核验；**不碰** profile 的 package.json） |
 | 宿主版本事实源 | `E:\deepseek Desktop\resources\runtime\primary-runtime\runtime.json` 的 `desktopVersion` |
 | 构建依赖 | esbuild 来自 `E:\deepseek工作区\HerTa\Herta-src\node_modules\.pnpm\esbuild@0.25.12`；preset 底本取仓库自带 `scripts/baselines/standard.dsh-*.patch.yml`（取版本最新） |
-| 测试 | 核心 23 组 + MiniMax 6 组；其中 4 个（dream / dream-manifest / forget / tool-schema）**必须**带 `--import ./scripts/test-resolve-hook.mjs`（它们静态 import `@deepseek-ai/*`，DSH 解包运行时在 `dsh-017/`） |
+| 测试 | **以 `package.json` 的 `test` 链为准**（当前 24 组 + `npm run test:minimax`）；预检按它逐条跑，并**沿用每条自己写的 `--import` 标记** —— 有几个测试**必须不带** hook（`test-schema-optional` 验的就是「没有 schemastery 时的兜底」，挂了 hook 等于把真库递进去） |
 | 上游目录 | 条目 `Herta-dsh`（`dsh-herta`）已收录；目录包 `dsh-plugin-catalog` **每天 UTC 02:23（北京 10:23）**重建 |
 | 发布文档惯例 | 工作区根：`Herta-DSH-vX.Y.Z-Release说明.md` + `Herta-DSH-vX.Y.Z-公告.md`（模板在 `docs/templates/`） |
 
@@ -221,7 +221,7 @@ node scripts/preflight-release.mjs --verify-published X.Y.Z
 | 2 | **`.bak` 备份会被发出去** | `reapply-*.mjs` 的备份写在 `lib/` 里，而 `files` 收了整个 `lib/` | `test-artifact-sync.mjs` 现在守着「发布目录无 `.bak`」 |
 | 3 | **`deploy.mjs` 曾把包内文件当陈旧删掉** | 镜像集漏了 `locale`/`LICENSE`/`NOTICE.md`/`THIRD-PARTY.md`，陈旧清理又遍历整个目标目录 | 已修：镜像集与 `package.json` 的 `files` 对齐，陈旧清理限定在镜像集内 |
 | 4 | **`git status` 的行尾噪音** | 构建写 LF、检出 CRLF，`git status` 显示 M 但 `git diff` 为空 | 判干净看 `git diff`，不看 `git status` |
-| 5 | **`npm test` 不含 4 个测试** | `test-tool-schema` / `test-dream-manifest` / `test-forget` / `test-artifact-sync` 不在链上 | 预检脚本按核心 23 组跑，别只跑 `npm test` |
+| 5 | **测试清单会过期** | 早期 `npm test` 链漏了 4 个测试（现已补上）；将来新增测试若不接进链上，谁都不会跑到它 | 预检**照 `package.json` 的 `test` 链**跑（不写死清单）：新测试接进链上即自动覆盖；**别一律加 `--import`**，有的测试要的是「没有某个包在场」 |
 | 6 | **`dsh plugin add` 会换掉安装形态** | 本地是 `file:`，一旦 `add dsh-herta` 就变成 npm 安装，之后改代码不再生效 | 日常环境用 `deploy.mjs`；真实 npm 路径用临时 profile 验 |
 | 7 | **npm 认证链接被打码** | 普通输出里 `auth/cli/***`、`authId=***` | 用 `npm publish --json` 取未脱敏的 `authUrl`/`doneUrl` |
 | 8 | **非 TTY 发布不会自动重试** | 认证完原进程已退出 | 拿 `doneUrl` 的 token 重发，或让用户在自己终端发 |
