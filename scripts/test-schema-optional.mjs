@@ -54,20 +54,33 @@ const pkg = join(root, "pkg");
 mkdirSync(pkg, { recursive: true });
 cpSync(libDir, join(pkg, "lib"), { recursive: true });
 
-// 只造运行时**确实会提供**的那两个替身；schemastery 故意不造。
+// 只造运行时**确实会提供**的那两个替身；schemastery 默认故意不造。
+// 传 --with-schemastery 时**连真的那些一起造**——用来验「正常路径没被改坏」。
+const withSchemastery = process.argv.includes("--with-schemastery");
 const STUBS = { "@deepseek-ai/dsh-tools": ["defineTool"], "@deepseek-ai/dsh-llm": ["BlockAssembler", "createUserMessage"] };
+if (withSchemastery) STUBS["@deepseek-ai/schemastery"] = ["Schema"];
 const nm = join(pkg, "node_modules", "@deepseek-ai");
 mkdirSync(nm, { recursive: true });
 for (const [name, exports] of Object.entries(STUBS)) {
   const dir = join(nm, name.split("/")[1]);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: "0.0.0", type: "module", main: "index.js" }));
-  writeFileSync(
-    join(dir, "index.js"),
-    exports.map((e) => `export const ${e} = new Proxy(function () {}, { get: () => () => {}, apply: () => ({}) });\n`).join("") + "export default {};\n",
-  );
+  // schemastery 的替身要**像真的**：默认导出得是个可链式调用的 schema 工厂。
+  // 否则兼容层那句「没有 .object 就当它不可用、退兜底」会正当触发，测出来的就不是真库那条路。
+  const body =
+    name === "@deepseek-ai/schemastery"
+      ? [
+          "const chain = new Proxy(function () {}, { get: (t, p) => (typeof p === 'symbol' || p === 'then' || p === 'toJSON') ? undefined : () => chain, apply: () => ({}) });",
+          "const z = { object: () => chain, string: () => chain, number: () => chain, boolean: () => chain,",
+          "  union: () => chain, literal: () => chain, array: () => chain, any: () => chain };",
+          "export const Schema = chain;",
+          "export default z;",
+          "",
+        ].join("\n")
+      : exports.map((e) => `export const ${e} = new Proxy(function () {}, { get: () => () => {}, apply: () => ({}) });\n`).join("") + "export default {};\n";
+  writeFileSync(join(dir, "index.js"), body);
 }
-console.log(`# 临时环境：${pkg}（有 dsh-tools / dsh-llm，**没有** schemastery）\n`);
+console.log(`# 临时环境：${pkg}（有 dsh-tools / dsh-llm${withSchemastery ? "、**也有** schemastery" : "，**没有** schemastery"}）\n`);
 
 console.log("=== 1) 入口必须能加载 ===");
 let entry = null;
@@ -82,16 +95,21 @@ console.log("\n=== 2) Config 要存在（拿宽容 schema 也要建得出来）=
 ok(entry?.Config !== undefined && entry.Config !== null, "导出了 Config");
 ok(entry?.name === "herta", "导出了插件名 name=herta", String(entry?.name));
 
-console.log("\n=== 3) 兜底确实生效（而不是偷偷用了真库）===");
+console.log("\n=== 3) 兜底/真库：必须是「该用谁就用谁」 ===");
 try {
   const compat = await import(pathToFileURL(join(pkg, "lib", "schema-compat.js")).href);
-  ok(compat.usingFallbackSchema === true, "usingFallbackSchema === true", String(compat.usingFallbackSchema));
+  const expectFallback = !withSchemastery;
+  ok(
+    compat.usingFallbackSchema === expectFallback,
+    `usingFallbackSchema === ${expectFallback}（${withSchemastery ? "有真库时不该走兜底" : "没真库时必须走兜底"}）`,
+    String(compat.usingFallbackSchema),
+  );
   const z = compat.default;
   const chained = z.object({ a: z.boolean().default(true).volatile(), b: z.union([1, 2]).default(1), c: z.number().min(0).max(9).default(1), d: z.string().default("x") });
   ok(chained !== undefined && chained !== null, "链式调用不抛（object/boolean/union/number/string + default/min/max/volatile）");
   ok(typeof chained.then === "undefined", "schema 节点不是 thenable（不会被 await 挂住）");
 } catch (e) {
-  ok(false, "兜底层可加载", String(e?.message ?? e).slice(0, 140));
+  ok(false, "兼容层可加载", String(e?.message ?? e).slice(0, 140));
 }
 
 console.log(`\n=== 结果：${pass} 通过 / ${fail} 失败 ===`);
