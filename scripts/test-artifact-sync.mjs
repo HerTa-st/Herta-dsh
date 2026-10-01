@@ -89,6 +89,32 @@ for (const d of subdirs) {
   ok(existsSync(join(LIB, d)), `lib/${d}/ 存在`);
 }
 
+// ── 发布面：`lib/` 等目录会随 npm 包发出去，里面不许留补丁脚本的备份 ──────────
+// 2026-10-01 踩到：`scripts/reapply-*.mjs` 的备份写在**被改的那个文件旁边**
+// （`lib/client.js.bak-unwired-groups`），而 `package.json` 的 `files` 收了整个
+// `lib/` —— `.gitignore` 挡得住 git，挡不住 npm：那个 511 KB 的备份进了 tarball。
+// 这里把「发布目录里没有 .bak*」钉成断言，免得下次又靠人记得。
+console.log("\n=== 发布目录里不许有补丁脚本的备份（.bak*）===");
+const PUBLISHED = ["lib", "assets", "preset", "locale"];
+const backups = [];
+for (const dir of PUBLISHED) {
+  const base = join(root, dir);
+  const walk = (abs, rel) => {
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      const childAbs = join(abs, entry.name);
+      const childRel = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(childAbs, childRel);
+      else if (entry.name.includes(".bak")) backups.push(childRel);
+    }
+  };
+  if (existsSync(base)) walk(base, dir);
+}
+ok(
+  backups.length === 0,
+  "没有 .bak 备份混进发布目录",
+  backups.length === 0 ? "" : `发现：${backups.join(", ")}（删掉它，或让脚本把备份写到仓库外）`,
+);
+
 console.log(`\n=== 结果：${pass} 通过 / ${fail} 失败 ===`);
 console.log(
   "（修法：`node scripts/build.mjs`；没有 esbuild 的手工场合，把 src/host 下改过的文件原样覆盖到 lib/。）",
