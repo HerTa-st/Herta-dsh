@@ -94,16 +94,26 @@ clone 后**开箱即用，无需自备素材**。
 
 ### 插件市场 / npm
 
-条目已提交上游精选目录 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-（PR [#5946](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5946)，**待合并**）。
-合并之后，DSH 内置的**插件市场（dshmarket）**里搜 `herta` 就能找到并一键安装。
+**已收录**：条目在上游精选目录
+[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（PR
+[#5946](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5946)，**2026-09-29 合并**）。
+所以 DSH 内置的**插件市场（dshmarket）**里搜 `herta` 就能找到「Herta-dsh」并一键安装 ——
+2026-10-01 实测：本机市场的目录（`/dsh-market/registry`）里已经有这一条，`added: 2026-09-29`。
 
-> ⚠️ **合并前搜不到，这是上游目录的性质，不是本仓库能绕开的**：市场的搜索候选集
-> 只有 `awesome-dsh-plugin.com/plugins.json` 里的条目（4367 条，由上游 CI 每日重建），
-> **不含**本机已装的插件，也没有「自定义目录源」这个用户入口。所以 `file:` 装进来的
-> 插件永远不出现在搜索结果里 —— 要能被搜到，就必须先被收录。
+> 📌 **目录与版本是两条链**：目录（简介、分类、下载量、能力扫描）由上游 CI 每日重建，
+> 而**装到哪个版本以 npm 的 `latest` 为准** —— 市场里「有更新」的判据也是 npm 的
+> `latest` dist-tag（`dshmarket/lib/updates.js`）。所以新版本发到 npm 之后用户立刻能装到，
+> 目录卡片上的版本号要等下一次重建才跟上。
+>
+> ⚠️ 市场搜索的候选集**只有**那份上游目录（2026-10-01 实测 **4400 条**），**不含**本机已装
+> 的插件，也没有「自定义目录源」这个用户入口。所以 `file:` 装进来的插件不会出现在搜索结果
+> 里 —— 要能被搜到，就必须先被收录。
+>
+> 条目里那条 `install: dsh plugin --profile web add dsh-herta` 是上游 CI 按模板生成的通用值
+> （条目文件里作者只写 `url` / `name` / `category` / `description` 四项）；桌面应用要把
+> profile 换成 `desktop`。
 
-等不及合并可以直接装 npm 包（0.1.4 起有）：
+也可以直接装 npm 包（`dsh-herta`，0.1.4 起有）：
 
 ```powershell
 dsh plugin --profile desktop add dsh-herta
