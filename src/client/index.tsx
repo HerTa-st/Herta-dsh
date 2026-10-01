@@ -1852,7 +1852,7 @@ function HertaFullView(props: {
  * 那是「谁该读它、现在缺什么」的备忘，不是免责声明。
  */
 const UNWIRED_HINT =
-  "下面这些项在 DSH 里改得动、写得进，但**整机当前没有任何代码读它们**：它们原本只被她自己的设置页读写，或者只被「写回她自己的 settings.json」这条已删除的链路消费。逐行的原因见每一项下面那行小字。";
+  "下面这些项在 DSH 里改得动、写得进，但**整机当前不会调用它们**：它们原本只被她自己的设置页读写，或者只被「写回她自己的 settings.json」这条已删除的链路消费。逐行的原因见每一项下面那行小字。";
 
 /**
  * 要进 DSH 凭据存储的三个密钥。
@@ -1868,7 +1868,7 @@ const CREDENTIALS = [
   {
     ref: "MIMO_API_KEY",
     label: "MiMo 密钥",
-    hint: "MiMo 语音合成用。宿主侧 mimo-tts.js 会读它 —— 但那个合成器目前还没有调用点，所以存下来暂时不会发声（见「语音引擎」那一行）。",
+    hint: "MiMo 语音合成用。它写进 DSH 凭据存储；宿主侧的 MiMo 合成器目前还没有接线（它只读环境变量），所以现在填了也不会有人读 —— 但那个合成器目前还没有调用点，所以存下来暂时不会发声（见「语音引擎」那一行）。",
     placeholder: "MiMo 控制台里的密钥",
   },
   {
@@ -1935,6 +1935,7 @@ const FIELD_HINTS = {
   fishSpeed: "语速。1 是模型原始速度。",
   fishEffect: "信道音效：400Hz–5.5kHz 带通 + 饱和，更像游戏里透过终端说话。关掉就是 Fish 原声。",
   fishPreset: "terminal_textured 多一层跟着语音走的噪声；terminal 是同一套滤波但不加噪声。",
+  fishProxy: "两条接口都不通时才需要（插件默认先走 fishaudio.org，国内可直连）。留空则依次看 fish_config.json 的 proxy、环境变量 HTTPS_PROXY / HTTP_PROXY。",
   workspace: "整机的工作区根目录（绝对路径）。",
   dreamEnabled: "她空闲时自己写废案。",
   backendThinking: "板砖的推理档位。",
@@ -2384,7 +2385,7 @@ function createSettingsSection(ui: unknown) {
         : phase === "downloading"
           ? "下载中…"
           : phase === "failed"
-            ? "上次失败"
+            ? `上次失败（原因：${String(state?.error ?? "未知")}）`
             : "未安装";
     const received = typeof state?.receivedBytes === "number" ? (state.receivedBytes as number) : 0;
     const total = typeof state?.totalBytes === "number" ? (state.totalBytes as number) : 0;
@@ -2749,9 +2750,16 @@ function createSettingsSection(ui: unknown) {
       clonedAt?: unknown;
       lastError?: unknown;
       retryAt?: unknown;
+      /** 这一档累计的计费字符（宿主 readout 带出来的）；取不到就不显示。 */
+      billedCharsTotal?: unknown;
     };
     const synth = (state?.synth ?? {}) as { refusal?: unknown; lastFailure?: unknown; inFlight?: unknown };
-    const pipeline = (state?.pipeline ?? {}) as { cappedUtterances?: unknown; utterances?: unknown };
+    const pipeline = (state?.pipeline ?? {}) as {
+      cappedUtterances?: unknown;
+      utterances?: unknown;
+      /** 最近一次撞到每轮上限的记录（`src/host/minimax/pipeline.ts` 的 `lastCap`）。 */
+      lastCap?: { spokenChars?: unknown; limit?: unknown } | null;
+    };
     const maxTurnChars = typeof state?.maxTurnChars === "number" ? state.maxTurnChars : null;
     const clients = typeof state?.clients === "number" ? state.clients : null;
     const phase = typeof voice.phase === "string" ? voice.phase : "absent";
@@ -2789,13 +2797,14 @@ function createSettingsSection(ui: unknown) {
           { style: HINT_STYLE },
           `当前引擎：${engineLabel(engine)}` + `　·　密钥：${keyKnown ? "已填" : "未填"}`,
         ),
-        // 「已回落」要显式说 —— 否则用户只会觉得"她的声音变了"，说不出为什么。
+        // 「语音状态」要显式说 —— 否则用户只会觉得"她的声音变了"，说不出为什么。
+        // 措辞必须中性：fish 明确不回落，写成「已回落：Fish Audio 不可用…」会自相矛盾。
         engineNote === null
           ? null
           : createElement(
               "div",
               { style: { ...HINT_STYLE, color: "var(--dsw-alias-label-warning, #b7791f)" } },
-              `已回落：${engineNote}`,
+              `语音状态：${engineNote}`,
             ),
         createElement("div", { style: HINT_STYLE }, phaseText),
         retryText === null ? null : createElement("div", { style: HINT_STYLE }, `下次可重试：${retryText}`),
@@ -2814,7 +2823,11 @@ function createSettingsSection(ui: unknown) {
           { style: HINT_STYLE },
           `每轮上限：${maxTurnChars === null ? "未知" : `${maxTurnChars} 字`}` +
             `　·　已到上限的轮数：${String(pipeline.cappedUtterances ?? 0)}` +
-            `　·　SSE 客户端：${clients === null ? "未知" : clients}`,
+            `　·　SSE 客户端：${clients === null ? "未知" : clients}` +
+            (pipeline.lastCap
+              ? `　·　⚠️ 上一轮太长：只念了前 ~${String(pipeline.lastCap.spokenChars)} 字（上限 ${String(pipeline.lastCap.limit)} 字），后面的内容只显示、没发声`
+              : "") +
+            (voice?.billedCharsTotal ? `　·　已计费 ${String(voice.billedCharsTotal)} 字` : ""),
         ),
       ),
       createElement(
@@ -2841,7 +2854,7 @@ function createSettingsSection(ui: unknown) {
         createElement(
           "div",
           { style: HINT_STYLE },
-          "整机安装包的网盘镜像（网络到不了 GitHub 时用）。在新标签页里打开。",
+          "整机安装包的网盘镜像（网络到不了 GitHub 时用）。**不含语音模型**（模型只能从 GitHub 下）。在新标签页里打开。",
         ),
       ),
       createElement(

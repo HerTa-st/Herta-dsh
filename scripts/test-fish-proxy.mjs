@@ -109,9 +109,18 @@ console.log("\n=== 设置页字段：schema / 分组表 / 宿主读取 ===");
 console.log("\n=== 产物与源码一起动（梦源那次就是漏了这一步）===");
 {
   const bundle = read("lib/client.js");
-  ok(bundle.includes("fishProxy: Object.freeze({"), "产物里有字段定义");
-  ok(bundle.includes('"fishProxy"])'), "产物的分组字段表里挂上了它");
-  ok(bundle.includes('label: "Fish 代理"'), "产物里那一行的标签是「Fish 代理」");
+  // 产物里的中文可能被 esbuild 转义成 `\uXXXX`（打包风格），也可能由 `scripts/reapply-*.mjs`
+  // 手改时留成字面量 —— **转义风格不是契约**，断言前先解码。
+  // 2026-10-01 真事：`npm run build` 重建产物后，`label: "Fish 代理"` 变成
+  // `label: "Fish \u4EE3\u7406"`，这条断言就误报成红了。
+  const decoded = bundle.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  ok(decoded.includes("fishProxy: Object.freeze({"), "产物里有字段定义");
+  ok(decoded.includes('"fishProxy"])'), "产物的分组字段表里挂上了它");
+  ok(decoded.includes('label: "Fish 代理"'), "产物里那一行的标签是「Fish 代理」");
+  ok(
+    decoded.includes("两条接口都不通时才需要（插件默认先走 fishaudio.org，国内可直连）"),
+    "产物里那一行的行内提示还在（FIELD_HINTS）",
+  );
 }
 
 console.log("\n=== src/host 与 lib 逐字节一致（构建约定）===");
