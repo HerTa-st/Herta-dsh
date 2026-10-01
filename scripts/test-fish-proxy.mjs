@@ -88,7 +88,7 @@ console.log("\n=== 没有写死的默认代理（回归守门）===");
     "代理是解析好之后**作为参数**传进 callFish 的",
   );
   ok(
-    src.includes("网络到不了 api.fish.audio，而且没有配代理"),
+    src.includes("网络到不了 Fish 接口（fishaudio.org / api.fish.audio），而且没有配代理"),
     "连不上且没代理时给的是可读的一句话（不是静默返回 null）",
   );
 }

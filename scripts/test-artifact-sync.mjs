@@ -71,7 +71,10 @@ for (const name of srcFiles) {
 ok(same === srcFiles.length, `全部 ${srcFiles.length} 个文件一致`, `实际一致 ${same} 个`);
 
 console.log("\n=== 反向：lib 里不该有 src/host 没有的『平铺文件』 ===");
-const libOnly = flat(LIB).filter((n) => !srcFiles.includes(n));
+// `client.js` 是 esbuild 打的包（源码在 `src/client/**`），本来就不来自 `src/host` ——
+// 文件头那段已经写明它不在检查范围，反查这里也必须显式排除，
+// 否则每次都会误报「多了：client.js」。
+const libOnly = flat(LIB).filter((n) => !srcFiles.includes(n) && n !== "client.js");
 ok(
   libOnly.length === 0,
   "没有来路不明的平铺文件",

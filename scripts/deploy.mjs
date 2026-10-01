@@ -10,6 +10,7 @@
  * 用法：
  *   node scripts/deploy.mjs                      # 默认部署到 lab profile
  *   DSH_PROFILE_DIR=<path> node scripts/deploy.mjs
+ *   node scripts/deploy.mjs --no-build           # 只镜像，不跑构建（见下）
  *
  * 注意：这只用于**开发迭代**。正式安装仍然走
  * `dsh plugin --profile <name> add dsh-herta`。
@@ -31,6 +32,13 @@
  * `assets/tts-runtime` 下的那几个 dll 被映射进那个子进程的地址空间，谁都写不动（EBUSY）
  * —— 而它在两次构建之间根本没变。所以先比内容再决定要不要碰它；真的写不动就逐条报
  * 出来，让人关掉实例重跑，而不是让整次部署死在一个不该被碰的文件上。
+ *
+ * ## `--no-build`：本机没有 esbuild 时只镜像
+ *
+ * 构建脚本要借一份**解开目录**的 DSH 安装（桌面应用的运行时在 `app.asar` 里，
+ * 普通 Node 读不到），所以有些机器上根本跑不了构建。而仓库里的 `lib/` 产物是
+ * **随提交一起推上来**的，一致性由 `scripts/test-artifact-sync.mjs` 守着 ——
+ * 这种机器上用 `--no-build`：跳过三个构建脚本，只做「镜像 + 清陈旧 + 逐字节核验」。
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -52,11 +60,27 @@ const root = resolve(here, "..");
 /** 默认目标是工作区里的隔离实验 profile，绝不碰桌面应用真正在用的那个。 */
 const DEFAULT_PROFILE_DIR = resolve(root, "..", "herta-lab", ".dsh", "profiles", "herta-lab");
 const profileDir = process.env.DSH_PROFILE_DIR ?? DEFAULT_PROFILE_DIR;
+/** 只镜像、不构建（见文件头 `--no-build`）。 */
+const NO_BUILD = process.argv.includes("--no-build");
 const target = join(profileDir, "node_modules", "dsh-herta");
 
-/** 镜像集 —— 与 package.json 的 `files` 一致（少了 assets 语音整档静默失效）。 */
-const MIRRORED_DIRS = ["lib", "assets", "preset"];
-const MIRRORED_FILES = ["cordis.patch.yml", "package.json", "icon.png"];
+/**
+ * 镜像集 —— 与 `package.json` 的 `files` 对齐（少了 `assets` 语音整档静默失效）。
+ *
+ * ⚠️ 2026-09-30 真机踩到：这里原先少了 `locale`、`LICENSE`、`NOTICE.md`、
+ * `THIRD-PARTY.md`（`files` 里都有），而下面的陈旧清理**遍历整个目标目录** ——
+ * 于是部署一次就把目标里那 5 个文件当「陈旧文件」删了。两处一起收口：
+ * 镜像集补齐成 `files` 的内容，陈旧判定只在自己的镜像集里找。
+ */
+const MIRRORED_DIRS = ["lib", "assets", "preset", "locale"];
+const MIRRORED_FILES = [
+  "cordis.patch.yml",
+  "package.json",
+  "icon.png",
+  "LICENSE",
+  "NOTICE.md",
+  "THIRD-PARTY.md",
+];
 
 /** 列出目录下所有文件的相对路径（`/` 分隔，便于跨平台比较）。 */
 function listFiles(base) {
@@ -125,10 +149,15 @@ function copyTree(from, to) {
   }
 }
 
-// 1) 构建（插件 + preset + 整机页面）
-execFileSync(process.execPath, [join(here, "build.mjs")], { stdio: "inherit", cwd: root });
-execFileSync(process.execPath, [join(here, "build-preset.mjs")], { stdio: "inherit", cwd: root });
-execFileSync(process.execPath, [join(here, "build-herta-ui.mjs")], { stdio: "inherit", cwd: root });
+// 1) 构建（插件 + preset + 整机页面）。`--no-build` 时跳过：产物随提交一起推，
+//    一致性由 `scripts/test-artifact-sync.mjs` 守（本机没有 esbuild，见文件头）。
+if (NO_BUILD) {
+  console.log("（--no-build：跳过构建，直接镜像仓库里的产物）");
+} else {
+  execFileSync(process.execPath, [join(here, "build.mjs")], { stdio: "inherit", cwd: root });
+  execFileSync(process.execPath, [join(here, "build-preset.mjs")], { stdio: "inherit", cwd: root });
+  execFileSync(process.execPath, [join(here, "build-herta-ui.mjs")], { stdio: "inherit", cwd: root });
+}
 
 // 2) 镜像插件（原地覆盖，不删目录 —— 见文件头那段实测记录）
 if (!existsSync(profileDir)) {
@@ -159,7 +188,14 @@ const sourceFiles = new Set(MIRRORED_FILES);
 for (const dir of MIRRORED_DIRS) {
   for (const rel of listFiles(join(root, dir))) sourceFiles.add(`${dir}/${rel}`);
 }
-const stale = listFiles(target).filter((rel) => !sourceFiles.has(rel));
+// 只在**自己的镜像集里**找陈旧文件。遍历整个目标目录会把镜像集之外的东西
+// （`locale/`、`LICENSE` 这些 `files` 里点名的、以及别人放进去的文件）当陈旧删掉。
+const stale = [];
+for (const dir of MIRRORED_DIRS) {
+  for (const rel of listFiles(join(target, dir))) {
+    if (!sourceFiles.has(`${dir}/${rel}`)) stale.push(`${dir}/${rel}`);
+  }
+}
 for (const rel of stale) {
   try {
     rmSync(join(target, rel), { force: true });

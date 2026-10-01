@@ -96,7 +96,16 @@ console.log("herta-settings");
   );
   // 本轮新加的两个字段必须是活的：整机的播放路径真的读它们。
   check("voiceMuted / voiceVolume 是活字段", WIRED_FIELD_NAMES.includes("voiceMuted") && WIRED_FIELD_NAMES.includes("voiceVolume"));
-  check("locale / theme / deviceScene 仍是活字段", ["locale", "theme", "deviceScene"].every((n) => WIRED_FIELD_NAMES.includes(n)));
+  // 2026-09-30 体检核实：`theme` 与 `deviceScene` 在 DSH 侧**没有消费方**
+  // （主题由外壳自己管；设备卡的 postMessage 分支根本没实现），所以它们被标成
+  // `wired: false`，只该活在「暂未接线」里、各带一条 `note`。
+  // `locale` 仍是活字段 —— 宿主真的按它解析整机界面语言。
+  check(
+    "locale 是活字段，theme / deviceScene 已被体检标成未接线",
+    WIRED_FIELD_NAMES.includes("locale") &&
+      UNWIRED_FIELD_NAMES.includes("theme") &&
+      UNWIRED_FIELD_NAMES.includes("deviceScene"),
+  );
   check("voiceVolume 默认满音量（100）", DEFAULTS.voiceVolume === 100);
   check("voiceMuted 默认不静音", DEFAULTS.voiceMuted === false);
 }

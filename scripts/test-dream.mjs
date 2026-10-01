@@ -72,7 +72,9 @@ try {
   const r3 = await promoteFeian(root, { title: "第一次", body: body(80) });
   ok(!r3.saved && String(r3.reason).includes("同名"), "同名被拒且给出原因", r3.reason);
   const r4 = await promoteFeian(root, { title: "坏的", body: "（我 说）\n没关栅栏" });
-  ok(!r4.saved && String(r4.reason).includes("fence"), "格式不过被拒", r4.reason);
+  // 拒收理由是**给人看的**，0.1.5 起中文化（机器可读的稳定码是 `checkFewShot`
+  // 返回的 `code: "fence"`）。这里跟本文件其它断言一样，钉中文措辞。
+  ok(!r4.saved && String(r4.reason).includes("栅栏"), "格式不过被拒", r4.reason);
   const r5 = await promoteFeian(root, { title: "  ", body: body(80) });
   ok(!r5.saved, "空标题被拒", r5.reason);
   const onDisk = readFileSync(join(root, ".herta", "narrative", "### 废案_00：第一次.txt"), "utf8");
@@ -87,7 +89,8 @@ try {
   const exec = fakeExec(root2);
 
   const short = await hertaDreamTool.execute({ title: "太短", body: "（我 说）\n就一句\n（/我 说）" }, exec);
-  ok(short.result === "archived" && short.reason.includes("too short"), "太短 -> archived", short.reason);
+  // 同上：理由是给人看的中文（0.1.5 起「太短了：16 字 < 下限 120 字…」）。
+  ok(short.result === "archived" && short.reason.includes("太短"), "太短 -> archived", short.reason);
   ok(short.archived === 1 && short.promoted === 0, "账本记了 1 条 archived");
 
   const good = await hertaDreamTool.execute({ title: "一段真的记忆", body: body(150) }, exec);

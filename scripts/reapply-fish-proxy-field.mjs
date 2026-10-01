@@ -49,7 +49,7 @@ const GROUP_NEW =
 /** 行内提示（FIELD_HINTS）：锚在这一行的行首，插在它整行之后。 */
 const HINT_ANCHOR = '  fishPreset: "terminal_textured';
 const HINT_INSERT = `
-  fishProxy: "直连不到 api.fish.audio 时才需要（国内网络基本都需要）。留空则依次看 fish_config.json 的 proxy、环境变量 HTTPS_PROXY / HTTP_PROXY。",`;
+  fishProxy: "两条接口都不通时才需要（插件默认先走 fishaudio.org，国内可直连）。留空则依次看 fish_config.json 的 proxy、环境变量 HTTPS_PROXY / HTTP_PROXY。",`;
 
 let failed = 0;
 
