@@ -1,0 +1,7 @@
+# 只属于开发的东西 —— 不进仓库
+preview/
+node_modules/
+*.tgz
+*.log
+.DS_Store
+Thumbs.db

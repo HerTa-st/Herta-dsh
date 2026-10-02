@@ -1,0 +1,6 @@
+# dsh-theme-herta bundle：向 web profile 注入一条客户端主题行。
+# 客户端模块扫描会读本包的 dsh.client 声明，把浏览器 bundle 注入 ui-theme 槽位。
+# 通过 `dsh plugin --profile <p> add dsh-theme-herta` 安装时，这条会自动挂进 loader。
+- insert:
+    - id: ui-theme-herta
+      name: 'dsh-theme-herta'
