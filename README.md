@@ -673,6 +673,36 @@ MIT 范围内**，权利归米哈游及各自所有者。本仓库已按《崩�
 
 ## 版本历史
 
+### v0.1.6
+
+**修掉「装完起不来」** —— 0.1.5 在宿主不给 `@deepseek-ai/schemastery` 时会整个插件导入失败
+（`dsh: warning: 1 entry did not activate herta (dsh-herta): failed to import`）；
+这一版把入口改成动态导入加兜底，另把「只改产物、源码没跟上」的双向漂移收口。
+
+- **入口不再硬依赖运行时的 schemastery**：入口第 22 行原先是**静态导入** `@deepseek-ai/schemastery`，
+  而本包 `dependencies` / `peerDependencies` 全空 —— 它指望 DSH 运行时把那个包递过来。
+  运行时不给时，**模块在解析阶段就抛**，静态导入又没法用 try/catch 兜，于是整个插件起不来。
+  新增 `src/host/schema-compat.js` 做**动态导入 + 兜底**：
+  - 拿得到真库 → 行为与从前**完全一致**；
+  - 拿不到 → 退到一个**宽容**的最小实现（覆盖用到的 `object/string/number/boolean/union`
+    与 `default/min/max/volatile`，未知方法名也返回可链式调用，且**保证不是 thenable**，
+    免得被 `await` 挂住）。它**不做真校验** —— 这比「整个插件起不来」好。
+  - `settings-schema.js` 的 `FIELDS`（字段名与默认值）不受影响，仍是唯一真相。
+- **产物双向漂移收口**：`lib/client.js` 是打包产物、真源是 `src/client/index.tsx`；此前几批体检
+  （`reapply-ux-texts*.mjs`）**只改了产物、没回填源码**，于是直接 `npm run build` 会**静默回退
+  8 处已经生效的界面文案**。本次把 8 处按脚本记录的原文回填进源码后重建（措辞收口：不再断言
+  「没有任何代码读它们」、MiMo 密钥行的实话、网盘行补「不含语音模型」、下载失败带上原因、
+  语音状态行显示「已计费 N 字」等），并给 `voice` / `pipeline` 的内联类型补上
+  `billedCharsTotal` / `lastCap`。
+- **回归守卫**：新增 `test-schema-optional.mjs`（挂进 `npm test`）—— 只给 `dsh-tools` / `dsh-llm`
+  造替身、**故意不给 schemastery**，要求入口能加载且走的是兜底；`test-schema-optional` 因此
+  **必须不带** `--import` hook（挂了 hook 等于把真库递进去，测的就不是兜底了）。
+- **发版工程**：新增 `RELEASING.md` 与 `scripts/preflight-release.mjs`（发布前八项预检 +
+  `--verify-published` 发布后核验）与 `docs/templates/` 三份文案模板；预检**照 `package.json`
+  的 `test` 链**跑测试，不再写死清单。
+- 测试：**核心 24 组 913 项 + MiniMax 6 组 390 项 = 1303 项全过、0 失败**。
+  ⚠️ **升级提示**：npm 上 0.1.5 是坏的（装完插件不激活），请直接升到 0.1.6。
+
 ### v0.1.5
 
 **让她真的出声，并且每一处「没声」都说得清原因** —— Fish 引擎补齐成可用的一档，
