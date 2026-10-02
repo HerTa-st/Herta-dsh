@@ -26,6 +26,8 @@
 - **写发布文案** → [`docs/templates/`](docs/templates/)：Release 说明 / B 站公告 / README 版本历史。
 - **第三方素材的授权边界**（语音、preset、图标） → [`NOTICE.md`](NOTICE.md)、[`THIRD-PARTY.md`](THIRD-PARTY.md)。
 - **这份包面向哪个 DSH 版本** → `package.json` 的 `engines.dsh`（不在这里缓存版本号）。
+- **分工四域、协作词汇（直推 / 跨域 review / 上游 / ADR）** → [`CONTEXT.md`](CONTEXT.md)：
+  讨论、提交信息、PR 描述里要用同一个词指同一件事时去取。
 
 ## 跨会话纪律
 

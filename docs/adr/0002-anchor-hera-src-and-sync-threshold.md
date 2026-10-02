@@ -1,0 +1,3 @@
+# 上游同步：锚定 Herta-src，落后 30 天或 50 提交触发评估
+
+`Herta-src` 是 `dsh-herta` 测试链的硬依赖（`test-narrative` / `test-herta-settings` 读它、esbuild 从它的 pnpm store 取、`HertaBio.txt` 从它逐字取），但它**无 `.git`** —— 与上游 `PersonaCLI/Herta` 的对应关系只存在于报告文档的行文里（`Herta-源码通读报告.md` 锚在上游 `c86d122`，2026-09-14）。决定：给 `Herta-src` 加 `.git` 记录它对应的上游 commit，并向 `HerTa-st/Herta-g` 推一个 marker 分支固化这个对应；**落后上游超过 30 天或 50 个提交，任一满足即触发同步评估**，由梦源执行（他是唯一能推 `HerTa-st/Herta-g` 的人）。评估只回答「要不要同步」，不同步本身是合法结论；阈值的另一侧保护是 —— `Herta-src` 一行没动是 `dsh-herta` 的既定纪律（README「上游 `Herta-src/` 一行没动」），同步永远是换整棵树、不是打补丁。本决定与 fork `Herta-g` 落后上游 139 个提交的现状直接相关：落后不可怕，**没有锚点的落后才可怕**。
