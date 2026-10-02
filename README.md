@@ -21,6 +21,23 @@
 >
 > 素材授权细节见 [`THIRD-PARTY.md`](./THIRD-PARTY.md)。
 
+---
+
+## 🎨 相关仓库：主题
+
+界面配色、开机 ASCII 开场、可换背景与「外观」设置页，是**另一个包**：
+**[`dsh-theme-herta`](https://github.com/HerTa-st/dsh-theme-herta)** —— 也可以单独安装
+（没装本插件的人，照样能只下主题）。
+
+> **现在还没"自带"。** 要让装了本插件的人一起拿到主题，还差三步：
+> 主题发到 npm → 本包加一条依赖 → 加一行 loader。进度见
+> [issue #7](https://github.com/HerTa-st/Herta-dsh/issues/7)。
+>
+> 在那之前，主题是**独立安装**的。本仓库里也放了同一份源码
+> （`theme/dsh-theme-herta/`），但它**不会**随插件一起装 —— 因为依赖与 `files`
+> 都还没加；**别先加 `files`**（那只会让每次安装多带约 3 MB 图，却没有任何用处）。
+
+
 四层，各自独立可验：
 
 | 层 | 内容 | 落在哪 |
