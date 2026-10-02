@@ -65,6 +65,7 @@
     "access": "public"
   },
   "scripts": {
+    "prepare": "husky",
     "build": "node scripts/build.mjs",
     "build:preset": "node scripts/build-preset.mjs",
     "build:ui": "node scripts/build-herta-ui.mjs",
@@ -74,5 +75,10 @@
     "test:minimax": "node --disable-warning=ExperimentalWarning scripts/build-minimax.mjs && node scripts/test-minimax-api.mjs && node scripts/test-minimax-segment.mjs && node scripts/test-minimax-voice.mjs && node scripts/test-minimax-synthesizer.mjs && node scripts/test-minimax-pipeline.mjs && node scripts/test-minimax-pcm.mjs",
     "test:minimax:e2e": "node --disable-warning=ExperimentalWarning --import ./scripts/test-resolve-hook.mjs scripts/test-minimax-voice-route.mjs",
     "test:integration": "node --import ./scripts/test-resolve-hook.mjs scripts/test-llm-integration.mjs"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
+    "prettier": "^3.9.9"
   }
 }

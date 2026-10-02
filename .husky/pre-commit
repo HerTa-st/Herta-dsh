@@ -1,0 +1,10 @@
+# 只对 staged 文件跑 Prettier —— 快，且不认识的文件会被 --ignore-unknown 跳过。
+npx lint-staged
+
+# AGENTS.md「改动的两步」第 1 步：动了 src/ 就得重建产物，判据是 build 之后 lib/ 无差异。
+# 这两行把它从「事后自查」变成「提交时强制」——不然源码与产物会在提交里静默漂移。
+npm run build
+git diff --exit-code -- lib
+
+# 第 2 步：全量测试。链上每条命令自带它需要的 --import 标记，照 package.json 的链跑。
+npm test
