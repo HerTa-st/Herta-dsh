@@ -189,16 +189,18 @@ console.log("herta-settings");
   // 描述符指名的 widget / trailer：客户端必须真认得（否则那一行静默退回通用形状，
   // 或者组尾那行状态悄悄消失）。
   const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
+    // 设置页那一层已拆到 settings.ts（#2 第四步）：这一段的三条断言改看它。
+    const settingsText = readFileSync(join(root, "src", "client", "settings.ts"), "utf8");
   const declaredWidgets = [...new Set(FIELD_NAMES.map((n) => FIELDS[n].widget).filter(Boolean))];
-  const handledWidgets = new Set([...clientText.matchAll(/spec\.widget === "([^"]+)"/g)].map((m) => m[1]));
+  const handledWidgets = new Set([...settingsText.matchAll(/spec\.widget === "([^"]+)"/g)].map((m) => m[1]));
   check(
     `每个声明的 widget 客户端都认（缺的：${declaredWidgets.filter((w) => !handledWidgets.has(w)).join(",") || "无"}）`,
     declaredWidgets.every((w) => handledWidgets.has(w)),
   );
   const declaredTrailers = [...new Set(SETTINGS_GROUPS.map((e) => e.trailer).filter(Boolean))];
   check(
-    `每个组的 trailer 客户端都注册了（缺的：${declaredTrailers.filter((t) => !clientText.includes(`"${t}":`)).join(",") || "无"}）`,
-    declaredTrailers.every((t) => clientText.includes(`"${t}":`)),
+    `每个组的 trailer 客户端都注册了（缺的：${declaredTrailers.filter((t) => !settingsText.includes(`"${t}":`)).join(",") || "无"}）`,
+    declaredTrailers.every((t) => settingsText.includes(`"${t}":`)),
   );
 
   // 展示元数据只有一份：客户端必须从字段表读，不许再抄表。
@@ -447,6 +449,8 @@ console.log("herta-settings");
 // ── 7. 凭据缝的取法是实测出来的，不许改回去（防回归）────────────────────────
 {
   const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
+    // 设置页那一层已拆到 settings.ts（#2 第四步）：这一段的三条断言改看它。
+    const settingsText = readFileSync(join(root, "src", "client", "settings.ts"), "utf8");
     // 凭据那一层已拆到 machine.ts（#2 第一步）：这一组的两条断言改看它，别的断言仍看 index.tsx。
     const machineText = readFileSync(join(root, "src", "client", "machine.ts"), "utf8");
   // 实测（lab，三次构建）：`ctx.inject(["remote.credentials"], …)` 的回调**不触发**；
@@ -462,8 +466,8 @@ console.log("herta-settings");
     !clientText.includes('ctx.inject(["remote"],'),
   );
   check("凭据解析包在 try 里（有的实现读属性会抛）", machineText.includes("function resolveCredentials"));
-  check("解析不到时页面如实显示「凭据服务不可用」而不是假装能用", clientText.includes("凭据服务不可用"));
-  check("保存/清除走真调用（saveCredential / clearCredential）", clientText.includes("saveCredential(props.spec.ref") && clientText.includes("clearCredential(props.spec.ref"));
+  check("解析不到时页面如实显示「凭据服务不可用」而不是假装能用", settingsText.includes("凭据服务不可用"));
+  check("保存/清除走真调用（saveCredential / clearCredential）", settingsText.includes("saveCredential(props.spec.ref") && settingsText.includes("clearCredential(props.spec.ref"));
   check("密钥不进 Config（不在 FIELDS 里）", !FIELD_NAMES.some((n) => /key/i.test(n)));
 }
 
