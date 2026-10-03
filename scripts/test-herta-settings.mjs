@@ -445,19 +445,21 @@ console.log("herta-settings");
 // ── 7. 凭据缝的取法是实测出来的，不许改回去（防回归）────────────────────────
 {
   const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
+    // 凭据那一层已拆到 machine.ts（#2 第一步）：这一组的两条断言改看它，别的断言仍看 index.tsx。
+    const machineText = readFileSync(join(root, "src", "client", "machine.ts"), "utf8");
   // 实测（lab，三次构建）：`ctx.inject(["remote.credentials"], …)` 的回调**不触发**；
   // `ctx.inject(["remote"], …)` 之后读 `.credentials` 也不可靠（回调时有时无，
   // 且读属性很可能抛异常）。真正可用的是 `ctx.get("remote.credentials")` ——
   // 第一次尝试就拿到了（诊断标记 settingsCredentialsAttempts = 1）。
   check(
     "凭据缝用 ctx.get('remote.credentials') 解析",
-    clientText.includes('get?.("remote.credentials")'),
+    machineText.includes('get?.("remote.credentials")'),
   );
   check(
     "凭据缝的**代码**不再用 ctx.inject 取（注释里留着坑的记录，不算违规）",
     !clientText.includes('ctx.inject(["remote"],'),
   );
-  check("凭据解析包在 try 里（有的实现读属性会抛）", clientText.includes("function resolveCredentials"));
+  check("凭据解析包在 try 里（有的实现读属性会抛）", machineText.includes("function resolveCredentials"));
   check("解析不到时页面如实显示「凭据服务不可用」而不是假装能用", clientText.includes("凭据服务不可用"));
   check("保存/清除走真调用（saveCredential / clearCredential）", clientText.includes("saveCredential(props.spec.ref") && clientText.includes("clearCredential(props.spec.ref"));
   check("密钥不进 Config（不在 FIELDS 里）", !FIELD_NAMES.some((n) => /key/i.test(n)));
