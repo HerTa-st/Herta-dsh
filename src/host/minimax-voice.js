@@ -39,7 +39,7 @@
  * 本地那两条（`local`，以及 `minimax` 不可用时的回落）都走**常驻合成进程**：
  * 模型加载一次，之后每句只付推理 —— 实测数字与四条生死规则见 `tts-runtime.js`。
  */
-import { readFileSync, rmSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { readJsonBody, sendJson } from "./http-json.js";
@@ -514,6 +514,15 @@ function ensureShared(ctx) {
  * @param config - profile 那一条 `herta` 的 Config（volatile 包装对象；`voiceEngine`
  *   的真相在这里，**只有这一面**会装它）。
  */
+/** 挂载追踪（落盘）—— 这台机器上 DSH 的 console 不进日志，所以"没挂载"这件事只写在文件里才看得见。 */
+function mountTrace(line) {
+  try {
+    const dir = join(process.env.USERPROFILE ?? process.env.HOME ?? ".", ".dsh");
+    appendFileSync(join(dir, "dsh-herta-voice-mount.txt"), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    /* 追踪本身不许影响挂载 */
+  }
+}
 export function installMiniMaxVoice(ctx, config) {
   try {
     const mini = ensureShared(ctx);
@@ -537,6 +546,7 @@ export function installMiniMaxVoice(ctx, config) {
     ctx.effect?.(() => () => disposeLocalWorker(), "dsh-herta: local tts worker");
     return mini;
   } catch (err) {
+    mountTrace(`MiniMax 语音层未挂载：${String(err?.stack ?? err?.message ?? err)}`);
     console.log(`[dsh-herta] MiniMax 语音层未挂载：${String(err?.message ?? err)}`);
     return null;
   }
@@ -546,6 +556,7 @@ export function installMiniMaxVoice(ctx, config) {
 export function registerMiniMaxVoiceRoutes(ctx) {
   const webServer = ctx.get("webServer");
   if (webServer === undefined) {
+    mountTrace('没有 webServer → 端点跳过（inject 回调没等到服务）');
     console.log(`[dsh-herta] 没有 webServer，MiniMax 端点跳过（${HERTA_MINIMAX_EVENTS_ROUTE}）`);
     return undefined;
   }
