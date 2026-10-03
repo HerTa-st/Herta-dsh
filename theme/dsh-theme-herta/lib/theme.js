@@ -188,6 +188,8 @@ export function ensureStyle() {
     // 给品牌行让出那个位置即可；收起态有更高特异性的规则（`._collapsed ._logoRow{padding:0}`）不受影响。
     // 类名带哈希前缀，同样用后缀匹配。
     `[data-windows-titlebar] [class*="_logoRow"] { padding-left: 40px !important; }`,
+    // 全局控件的悬停底色。⚠️ 名字带 `-solid` 却给了半透明值 —— 这是同一类「半透明自乘」的温床，
+    // 但它管的是**所有**控件的悬停反馈，不属于本次侧栏那处证据。先原样保留，不动没证据的地方。
     `body { --dsw-alias-interactive-bg-hover-solid: rgba(155,138,224,0.12) !important; }`,
     "#root { background-color: transparent !important; }",
     // 壁纸层（z -2）与可读性遮罩（z -1）：**不能**铺在 body 自己的背景上 ✗
