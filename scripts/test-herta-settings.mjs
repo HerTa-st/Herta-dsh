@@ -409,8 +409,10 @@ console.log("herta-settings");
   check("HertaBridge 契约里有 VoicePrefs", typesText.includes("export interface VoicePrefs"));
 
   const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
-  check("父窗口应答 getVoicePrefs", clientText.includes('case "getVoicePrefs"'));
-  check("父窗口把 0–100 换算成 0–1 下发", clientText.includes("volume / 100"));
+    // 界面那一层已拆到 ui.ts（#2 第三步）：这一段的两条断言改看它。
+    const uiText = readFileSync(join(root, "src", "client", "ui.ts"), "utf8");
+  check("父窗口应答 getVoicePrefs", uiText.includes('case "getVoicePrefs"'));
+  check("父窗口把 0–100 换算成 0–1 下发", uiText.includes("volume / 100"));
 }
 
 // ── 6. 设置页已从整机删除（防回归）──────────────────────────────────────────
