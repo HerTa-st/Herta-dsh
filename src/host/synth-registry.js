@@ -38,6 +38,8 @@ export const SYNTH_CODES = Object.freeze({
   ok: "ok",
   /** 这一档当前用不了（没装模型、没配密钥、未接线……）。 */
   unavailable: "unavailable",
+  /** 这一档没有密钥（ADR-0006 的契约里有它 —— 原先这张表漏了这一项，codeOf 于是一直返回 undefined）。 */
+  no_key: "no_key",
   /** 网络/上游不通。 */
   network: "network",
   /** 上游明确拒绝（配额、鉴权、内容策略……）。 */
@@ -178,7 +180,11 @@ export function createSynthRouter(opts) {
   async function runAdapter(adapter, req) {
     try {
       if (!adapter.available()) {
-        return synthFail(adapter.name, describeUnavailable(adapter) ?? SYNTH_CODES.unavailable);
+        return synthFail(
+          adapter.name,
+          // 先问这一档自己（它知道自己为什么用不了），没有才落到装配侧注进来说明。
+          adapter.unavailableCode?.() ?? describeUnavailable(adapter) ?? SYNTH_CODES.unavailable,
+        );
       }
       const out = await adapter.synthesize(req);
       if (out === null || out === undefined) return synthFail(adapter.name, SYNTH_CODES.other);
@@ -299,6 +305,8 @@ export function createMinimaxAdapter(deps) {
   return {
     name: "minimax",
     available: () => synthesizer.available() === true,
+    /** 用不了时给哪个 code：认领/拒绝/没密钥由 describe 的原文归一次类。 */
+    unavailableCode: () => codeOf(describe()),
     async synthesize(req) {
       if (!synthesizer.available()) return synthFail("minimax", codeOf(describe()));
       const out = await synthesizer.synthesize(req);
@@ -325,6 +333,8 @@ export function createFishAdapter(deps) {
   return {
     name: "fish",
     available: () => keyPresent() === true,
+    /** 用不了时给哪个 code（Q18：鱼档的"用不了"绝大多数是**没密钥**，别糊成"不可用"）。 */
+    unavailableCode: () => (keyPresent() === true ? SYNTH_CODES.unavailable : SYNTH_CODES.no_key),
     async synthesize(req) {
       let fish = null;
       try {

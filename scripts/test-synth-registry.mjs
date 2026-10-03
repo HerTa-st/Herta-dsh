@@ -162,5 +162,22 @@ const minimaxOk = createMinimaxAdapter({
 });
 eq("minimax：成功时带音频", (await minimaxOk.synthesize(req)).audio?.tag, "mm");
 
+
+// ── Q18：鱼档没密钥时，router 报的是 no_key（不该糊成 unavailable）────────
+{
+  const noKey = createSynthRouter({
+    adapters: {
+      fish: createFishAdapter({
+        load: async () => ({ trySynthesizePcm: async () => null }),
+        params: () => ({}),
+        keyPresent: () => false,
+      }),
+    },
+    engineOf: () => "fish",
+  });
+  eq("Q18 fish 没密钥 → 不发声", await noKey.synthesize(req), null);
+  eq("Q18 fish 没密钥 → code = no_key", noKey.lastCode().code, SYNTH_CODES.no_key);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
