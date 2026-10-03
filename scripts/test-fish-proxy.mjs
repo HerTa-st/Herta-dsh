@@ -173,6 +173,9 @@ console.log("\n=== 设置页字段：schema / 分组归属 / 宿主读取 ===");
 {
   const schema = read("src/host/settings-schema.js");
   const voice = read("src/host/minimax-voice.js");
+  // 候选 #1 之后，fish 那一档的实现搬进了 `synth-registry.js`（adapter 契约的 seam）：
+  // 「读失败原因 → 变成 code」这件事现在住在那儿。断言照样钉行为，只是不再假设文件。
+  const registry = read("src/host/synth-registry.js");
   // 分组归属也住在描述符里了（2026-10-03 收编）：原先它在一张独立的
   // `settings-groups.js` 名单里，两张名单不同步就渲染事故。
   const spec = schema.slice(schema.indexOf("fishProxy:"), schema.indexOf("fishProxy:") + 600);
@@ -188,8 +191,8 @@ console.log("\n=== 设置页字段：schema / 分组归属 / 宿主读取 ===");
     "宿主把它传给了 fish-tts（fishProxy）"
   );
   ok(
-    /getLastFailure/.test(voice),
-    "宿主用 getLastFailure 把失败原因写到 engineNote"
+    /getLastFailure/.test(registry),
+    "fish 档读 getLastFailure，把失败原因变成 code（原文进 status，Q13/Q30）"
   );
 }
 

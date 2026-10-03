@@ -103,7 +103,15 @@ check("客户端设置页声明了 Fish 密钥这一行", clientRef === "FISH_AP
 check("宿主声明了同一个 ref", hostRef === "FISH_API_KEY");
 check("两半的字面量一致", clientRef !== undefined && clientRef === hostRef);
 check("客户端把密钥交给凭据缝（saveCredential/clearCredential 走 spec.ref）", clientText.includes("saveCredential(props.spec.ref") && clientText.includes("clearCredential(props.spec.ref"));
-check("宿主在合成前现读凭据（不缓存明文）", hostText.includes("readFishKey") && hostText.includes("fishKey:"));
+// 候选 #1 之后，"现读现传"这件事**拆到了两处**：宿主提供 `readKey`（现读），
+// fish 档用它拼出 `fishKey`（现传）。断言照样钉行为，只是不再假设它在同一个文件里
+// —— 这正是 Q23 说的"让正则测试穿过 interface，而不是抓源码文本"。
+const registryText = readFileSync(join(root, "src", "host", "synth-registry.js"), "utf8");
+check(
+  "合成前现读凭据、不缓存明文（宿主现读 + fish 档现传）",
+  (hostText.includes("readFishKey") || registryText.includes("readFishKey")) &&
+    registryText.includes("fishKey:"),
+);
 
 // ── 4. 密钥不许进 Config ─────────────────────────────────────────────────
 check("字段表里没有 fishKey（密钥不落明文 cordis.patch.yml）", !("fishKey" in FIELDS));
