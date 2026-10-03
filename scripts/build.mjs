@@ -22,7 +22,15 @@
  *    esbuild 默认不会做这个替换，必须自己接一个 onResolve。
  */
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -54,16 +62,22 @@ const PLATFORM_SEED = [
 
 /** 本机没有独立安装 esbuild，从 Herta 仓库的 pnpm 虚拟 store 里取。 */
 function findEsbuild() {
-  const candidates = [
-    join(HERTA_SRC, "node_modules", ".pnpm", "esbuild@0.25.12", "node_modules", "esbuild"),
-    join(HERTA_SRC, "node_modules", ".pnpm", "esbuild@0.28.1", "node_modules", "esbuild"),
-  ];
-  for (const dir of candidates) {
-    const entry = join(dir, "lib", "main.js");
-    if (existsSync(entry)) return entry;
-  }
+  // 固定 0.25.12（ADR-0003：可复现构建）。候选列表已删除 —— 换 esbuild 版本意味着
+  // `lib/client.js` 字节漂移，pre-commit 的「build 后 lib/ 无 diff」会当场拦下；
+  // 要升级得显式改这里 + 重建产物 + 过守卫，而不是静默走另一个候选。
+  const dir = join(
+    HERTA_SRC,
+    "node_modules",
+    ".pnpm",
+    "esbuild@0.25.12",
+    "node_modules",
+    "esbuild"
+  );
+  const entry = join(dir, "lib", "main.js");
+  if (existsSync(entry)) return entry;
   throw new Error(
-    `找不到 esbuild。试过：\n  ${candidates.map((c) => join(c, "lib", "main.js")).join("\n  ")}`,
+    `找不到 esbuild 0.25.12（可复现构建的固定版本）：\n  ${entry}\n` +
+      `可用 HERTA_SRC 指向含该版本 pnpm store 的 Herta 源码树。`
   );
 }
 
@@ -145,7 +159,10 @@ function transformHertaCss(raw) {
   let css = raw;
   for (const pattern of STRIP_PAGE_CHROME) css = css.replace(pattern, "");
   // 先换带主题的那一形态，再换裸 `:root`
-  css = css.replace(/:root\[data-theme="dark"\]/g, ':host([data-theme="dark"])');
+  css = css.replace(
+    /:root\[data-theme="dark"\]/g,
+    ':host([data-theme="dark"])'
+  );
   css = css.replace(/:root/g, ":host");
 
   const leftover = css.match(/(?<![\w.#-])(?:html|body)\s*\{/);
@@ -153,7 +170,9 @@ function transformHertaCss(raw) {
     throw new Error(`CSS 转换后仍残留整页选择器：${leftover[0]}`);
   }
   if (!css.includes(":host{")) {
-    throw new Error("CSS 转换后没有 :host 变量块 —— 变量定义可能改了写法，需要更新转换逻辑");
+    throw new Error(
+      "CSS 转换后没有 :host 变量块 —— 变量定义可能改了写法，需要更新转换逻辑"
+    );
   }
   return HERA_HOST_BASE + css;
 }
@@ -166,9 +185,12 @@ const hertaCss = {
       const raw = readFileSync(args.path, "utf8");
       const transformed = transformHertaCss(raw);
       console.log(
-        `样式表 ${(raw.length / 1024).toFixed(0)} KB → ${(transformed.length / 1024).toFixed(0)} KB（已转 :host、去整页 chrome）`,
+        `样式表 ${(raw.length / 1024).toFixed(0)} KB → ${(transformed.length / 1024).toFixed(0)} KB（已转 :host、去整页 chrome）`
       );
-      return { contents: `export default ${JSON.stringify(transformed)};`, loader: "js" };
+      return {
+        contents: `export default ${JSON.stringify(transformed)};`,
+        loader: "js",
+      };
     });
   },
 };
@@ -182,15 +204,21 @@ const FOOTER = `return module.exports;
 
 async function main() {
   if (!existsSync(HERTA_RENDERER)) {
-    throw new Error(`找不到 Herta 渲染层：${HERTA_RENDERER}（可用 HERTA_SRC 覆盖）`);
+    throw new Error(
+      `找不到 Herta 渲染层：${HERTA_RENDERER}（可用 HERTA_SRC 覆盖）`
+    );
   }
 
   // 0) MiniMax 那一组模块是 TS 移植件，先单独编译到 lib/minimax/。
   //    其余 host 模块仍是逐字节拷贝 —— 这条缝只开给那一组（理由见 build-minimax.mjs）。
-  execFileSync(process.execPath, ["--disable-warning=ExperimentalWarning", join(here, "build-minimax.mjs")], {
-    stdio: "inherit",
-    cwd: root,
-  });
+  execFileSync(
+    process.execPath,
+    ["--disable-warning=ExperimentalWarning", join(here, "build-minimax.mjs")],
+    {
+      stdio: "inherit",
+      cwd: root,
+    }
+  );
 
   const esbuildEntry = findEsbuild();
   const esbuild = await import(pathToFileURL(esbuildEntry).href);
@@ -209,7 +237,11 @@ async function main() {
   for (const name of readdirSync(outDir)) {
     // 只管 host 半侧的平铺产物：client.js 是本脚本生成的，herta-ui/ 是
     // build-herta-ui.mjs 的，都不在这里的职责内。
-    if (name === "client.js" || (!name.endsWith(".js") && !name.endsWith(".cjs"))) continue;
+    if (
+      name === "client.js" ||
+      (!name.endsWith(".js") && !name.endsWith(".cjs"))
+    )
+      continue;
     if (hostNames.has(name)) continue;
     rmSync(join(outDir, name), { force: true });
     console.log(`lib/${name} 已删除（源码里没有这个模块了）`);
@@ -238,13 +270,23 @@ async function main() {
     metafile: true,
   });
 
-  const bytes = Object.values(result.metafile.outputs).reduce((n, o) => n + o.bytes, 0);
+  const bytes = Object.values(result.metafile.outputs).reduce(
+    (n, o) => n + o.bytes,
+    0
+  );
   console.log(`lib/index.js   已生成（host 半侧）`);
-  console.log(`lib/client.js  已生成（client 半侧，${(bytes / 1024).toFixed(1)} KB）`);
+  console.log(
+    `lib/client.js  已生成（client 半侧，${(bytes / 1024).toFixed(1)} KB）`
+  );
 
   // 自检：确认外部依赖真的没被打进来。
   for (const seeded of ["react", "react/jsx-runtime"]) {
-    if (!result.metafile.inputs[`${seeded}`] && !Object.keys(result.metafile.inputs).some((k) => k.includes(`node_modules/${seeded}/`))) {
+    if (
+      !result.metafile.inputs[`${seeded}`] &&
+      !Object.keys(result.metafile.inputs).some((k) =>
+        k.includes(`node_modules/${seeded}/`)
+      )
+    ) {
       continue;
     }
     throw new Error(`${seeded} 被打进了 bundle —— 它必须保持 external`);
