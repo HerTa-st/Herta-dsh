@@ -489,7 +489,13 @@ function ensureShared(ctx) {
     if (!keyKnown) await readKey();
     if (engine === "fish") {
       try {
-        fishKeyPresent = (await readFishKey()) !== null;
+        // 密钥可能来自 DSH 凭据 **或** fish_config.json 的 keyFile 文件兜底 ——
+        // 让 fish-tts.js 自己回答「有没有」（fishStatus().keyPresent 就是这件事）。
+        // 早先只认凭据，把文件兜底那条路掐死了：Q18 的判据是「密钥在不在」，
+        // 不是「凭据在不在」。
+        const fish = await import("./fish-tts.js");
+        const credential = await readFishKey();
+        fishKeyPresent = fish.fishStatus?.(credential)?.keyPresent === true;
       } catch {
         fishKeyPresent = false;
       }
