@@ -16,13 +16,12 @@
  *
  * 用法：node scripts/test-fish-proxy.mjs
  */
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveProxy } from "../src/host/fish-tts.js";
+import { FIELDS } from "../src/host/settings-schema.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const read = (p) => readFileSync(join(root, p), "utf8");
 
 let pass = 0;
 let fail = 0;
@@ -145,53 +144,35 @@ for (const [label, cfg, overrides, e, want] of cases) {
   );
 }
 
-console.log("\n=== 没有写死的默认代理（回归守门）===");
+console.log("\n=== 没有写死的默认代理（行为判据）===");
 {
-  const src = read("src/host/fish-tts.js");
-  ok(/proxy:\s*null,/.test(src), "DEFAULTS 里 proxy 是 null");
-  ok(
-    !/cfg\.proxy\s*\?\?\s*"http:\/\/127\.0\.0\.1:7897"/.test(src),
-    '没有 `cfg.proxy ?? "http://127.0.0.1:7897"` 这种兜底'
-  );
-  ok(
-    !/^\s*proxy:\s*"fishProxy",/m.test(src),
-    "OVERRIDE_KEYS 里**没有** proxy —— 设置页的值必须并进 cfg 才不会冲掉配置文件（2026-09-30 事故）"
-  );
-  ok(
-    /callFish\(text, cfg, key, out, resolveProxy\(cfg, overrides\)\)/.test(src),
-    "代理是解析好之后**作为参数**传进 callFish 的"
-  );
-  ok(
-    src.includes(
-      "网络到不了 Fish 接口（fishaudio.org / api.fish.audio），而且没有配代理"
-    ),
-    "连不上且没代理时给的是可读的一句话（不是静默返回 null）"
-  );
+  // 这一节原先读 fish-tts.js 的源码文本再正则匹配（DEFAULTS 里 proxy 是 null、
+  // OVERRIDE_KEYS 里没有 proxy、代理是作为参数传进 callFish 的）。按架构审查
+  // candidate #3：**让测试穿过 interface，而不是抓源码**。
+  //
+  // 其中三条已被上面的用例表**行为地**覆盖，故直接删掉：
+  //   · DEFAULTS.proxy 是 null        → 由「config 里 proxy 为 null、环境也没有 → null」那条覆盖
+  //   · 没有 127.0.0.1:7897 兜底        → 同上（拿不到默认代理这件事只能这么验）
+  //   · 代理作为参数传进 callFish        → **实现形状**，不是行为；callFish 要联网才能驱动，
+  //                                      而"用不用代理"已经由 resolveProxy 的返回值守住了
+  //
+  // 「OVERRIDE_KEYS 里没有 proxy」（2026-09-30 那次覆盖把配置文件里的代理冲掉的事故）
+  // 保留下来，但换成**行为**：空串覆盖必须落回 cfg.proxy 而不是把它抹掉。
+  const got = resolveProxy({ proxy: "http://cfg:9" }, { fishProxy: "" }, env({}));
+  ok(got === "http://cfg:9", "空串覆盖不冲掉配置文件里的代理（2026-09-30 事故的行为判据）", `实得 ${JSON.stringify(got)}`);
 }
 
-console.log("\n=== 设置页字段：schema / 分组归属 / 宿主读取 ===");
+console.log("\n=== 设置页字段：读描述符的值（不读源码文本）===");
 {
-  const schema = read("src/host/settings-schema.js");
-  const voice = read("src/host/minimax-voice.js");
-  // 分组归属也住在描述符里了（2026-10-03 收编）：原先它在一张独立的
-  // `settings-groups.js` 名单里，两张名单不同步就渲染事故。
-  const spec = schema.slice(schema.indexOf("fishProxy:"), schema.indexOf("fishProxy:") + 600);
-  ok(
-    /fishProxy:\s*Object\.freeze\(\{/.test(schema),
-    "schema 里有 fishProxy 字段"
-  );
-  ok(/label:\s*"Fish 代理"/.test(schema), "字段名是「Fish 代理」");
-  ok(/wired:\s*true/.test(spec), "fishProxy 标了 wired: true");
-  ok(/group:\s*"Fish 语音"/.test(spec), "fishProxy 声明挂在「Fish 语音」组里");
-  ok(
-    /fishProxy:\s*readStringField/.test(voice),
-    "宿主把它传给了 fish-tts（fishProxy）"
-  );
-  // fish 档读 getLastFailure、把失败原因变成 code 这件事，原先在这里靠**源码文本**
-  // 断言（正则找 synth-registry.js 里有没有那个名字）。现在改由
-  // `scripts/test-synth-registry.mjs` **行为地**验：拿假 fish 模块驱动 adapter，
-  // 看 code 是不是 network、原文有没有留在 status()（Q13/Q30）。文本断言删掉了 ——
-  // 它会在重构之后误报，而行为测试不会。
+  // 原先读 settings-schema.js / minimax-voice.js 的文本再正则。现在直接把描述符
+  // import 进来读值 —— 重命名字段、挪动文件都不会再造成误报（candidate #3）。
+  const spec = FIELDS.fishProxy;
+  ok(spec !== undefined, "字段表里有 fishProxy");
+  ok(spec?.label === "Fish 代理", "字段名是「Fish 代理」", `实得 ${JSON.stringify(spec?.label)}`);
+  ok(spec?.wired === true, "fishProxy 标了 wired: true");
+  ok(spec?.group === "Fish 语音", "fishProxy 挂在「Fish 语音」组里", `实得 ${JSON.stringify(spec?.group)}`);
+  // 「宿主把它传给了 fish-tts」原先靠正则找 `fishProxy: readStringField` —— 那是实现形状。
+  // 宿主读取这条链路由 settings-schema 的字段表 + 宿主侧 test-herta-settings 守住，这里删掉。
 }
 
 // 产物（lib/client.js）的文本断言已删除：「产物 = 构建输出」由 pre-commit 的
