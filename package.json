@@ -53,6 +53,7 @@
     "lib",
     "assets",
     "locale",
+    "theme",
     "icon.png",
     "cordis.patch.yml",
     "preset/herta.patch.yml",
@@ -63,6 +64,9 @@
   "license": "MIT",
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "dsh-theme-herta": "^0.1.0"
   },
   "scripts": {
     "prepare": "husky",
