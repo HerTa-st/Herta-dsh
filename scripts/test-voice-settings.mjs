@@ -146,13 +146,12 @@ check("默认值被冻结", Object.isFrozen(DEFAULT_VOICE_SETTINGS));
 // 0.1.7-rc.2 起「引擎 / 实时语音」是插件 Config 的字段（`voiceEngine` / `realtimeVoice`），
 // **校验归 schemastery 的 schema**（`src/host/index.js` 的 `Config` 由
 // `settings-schema.js` 的 FIELDS 生成），写回与旧文件迁移归 `settings-sync.js`。
-// 那两层的断言在 `scripts/test-herta-settings.mjs`，这里只留一条交叉核对：
-// 共享模块的引擎字面量必须与字段表的取值域完全一致 —— 两处漂移的症状是
-// 「设置页能选，但拼给她的状态里落回默认」。
-check(
-  "共享模块的引擎档位与 FIELDS.voiceEngine 的取值域逐字一致",
-  VOICE_ENGINES.join(",") === FIELD_VALUES.voiceEngine,
-);
+//
+// 这里原先还有一条交叉核对：「共享模块的引擎档位与 FIELDS.voiceEngine 的取值域逐字一致」。
+// 候选 #4 把取值域收成一处之后（`FIELDS.voiceEngine.values = VOICE_ENGINES`），那条断言
+// **不可能失败** —— 它比的是同一份数据和它自己。删掉不是降低覆盖，是它已经没有能力失败
+// （架构审查 candidate #4 的验收里写着「test 断言消失（不再需要对账）」）。
+// 改动取值域这件事由下面两条默认值核对，以及 test-herta-settings 的字段表断言守着。
 check(
   "共享模块的默认引擎与 FIELDS.voiceEngine 的默认值一致",
   DEFAULT_VOICE_SETTINGS.engine === FIELD_DEFAULTS.voiceEngine,
