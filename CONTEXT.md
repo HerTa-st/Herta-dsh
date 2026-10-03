@@ -69,3 +69,22 @@ _Avoid_: 决策文档（太泛）、设计文档（本仓库 `docs/*.md` 是设�
 `lib/` 等产物只经 `npm run build` 生成（esbuild 固定 0.25.12），不存在手工修补
 产物的路径；要改产物的内容，改 `src/` 再重建（ADR-0003）。
 _Avoid_: 重新生成产物、reapply（那批脚本已删）、补产物
+
+**SynthAdapter（合成档）**：
+一档语音引擎对合成契约的实现，由 `src/host/synth-registry.js` 的工厂产出：自报 `name`、
+提供 `available()`（**活开关**，每次用之前重新问）、`synthesize(req) → {audio, name, code}`，
+可选 `status()` 与 `cancel()`（ADR-0005 / ADR-0006）。
+_Avoid_: 引擎插件、TTS 后端（指向不唯一）
+
+**Router（合成 router）**：
+按 `voiceEngine` 选一档、执行回落规则（`minimax → local`；`fish` / `local` / `mimo`
+**不回落**）、每结束一次合成统一 `noteState()`、并把取消**转发给所有** adapter 的那一层。
+它不认识任何引擎的私有状态 —— 引擎知识留在各自的工厂里（ADR-0005）。
+_Avoid_: 分发器、dispatcher（与「分发配置」的"分发"混）
+
+**code 与文案的分界**：
+adapter 失败时只给机器可读的 code（`no_key` / `network` / `refused` / `local_failed` /
+`not_wired` / `other`）；给用户看的中文在**边界**拼一次（宿主 `reasonText`、客户端状态行），
+原始细节留在该档的 `status()` 里。云端失败 + 兜底也失败时，code 是 `a+b` 两个拼起来的
+（ADR-0006）。
+_Avoid_: 错误信息、文案（太泛）

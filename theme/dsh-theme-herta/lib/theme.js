@@ -162,19 +162,25 @@ export function ensureStyle() {
     // 左侧那栏：**正解是改令牌** ✓ —— 参照物点的就是 `--dsw-specific-sidebar-*` 这一族
     // （fill / nav-item-hover / nav-item-active / active-accent），侧栏的底与悬停都归它们管。
     // 我上一版用类名硬压是错的解法 ✗（悬停会跳成不透明，正因为它另有出处）。
+    //
+    // ⚠️ 两处坑，都来自"半透明自乘"：
+    //
+    //   1. fill **必须不透明**。这一族令牌在行、字、悬停/选中高光上都直接生效，而半透明是自乘的 ——
+    //      侧栏底一层半透明、高光再一层半透明，叠起来壁纸就明显渗进来，看着像高光/文字重影了一遍。
+    //      「垫一层不透明底」只救得了侧栏底色那一处，救不了行与高光（它们各自还带一层）。`#261f2e`
+    //      就是原先 `rgba(38,31,46,0.64)` 的不透明形式：颜色不变，只是不再透光。
+    //   2. 别再用「给所有后代加悬停底色」那种通配兜底（旧版那行已删）。它把底色加到**每一个**后代上，
+    //      鼠标停在选中行里时就与 `nav-item-active` 叠成两层、再乘上侧栏底那层 —— 正是"高光叠了两层"。
+    //      悬停/选中本来就归 `--dsw-specific-sidebar-nav-item-*` 这三个令牌管，够用。
     "body {" +
-      " --dsw-specific-sidebar-fill: rgba(38,31,46,0.64) !important;" +
+      " --dsw-specific-sidebar-fill: #261f2e !important;" +
       " --dsw-specific-sidebar-nav-item-hover: rgba(155,138,224,0.10) !important;" +
       " --dsw-specific-sidebar-nav-item-active: rgba(155,138,224,0.16) !important;" +
       " --dsw-specific-sidebar-nav-item-active-accent: #9b8ae0 !important; }",
-    // 兜底：万一那栏没吃令牌（探针只量到"计算值不透明"，量不出它从哪儿来），
-    // 类名这层仍按**同一个值**压住 —— 两处指向同一个数，就不会又出现不一致。
-    `[class*="_sidebarCol"], [class*="_quietBars"] {` +
-      " background-color: var(--dsw-specific-sidebar-fill, rgba(38,31,46,0.64)) !important; }",
-    // 悬停：令牌 + 一点兜底，别跳成不透明。**不去改它的 transition** ✗ ——
-    // 参照物根本不碰过渡，因为它的悬停本来就是半透明的，淡入淡出无所谓。
-    `[class*="_sidebarCol"] *:hover, [class*="_quietBars"] *:hover {` +
-      " background-color: rgba(155,138,224,0.10) !important; }",
+    // 兜底：万一那栏没吃令牌（探针只量到"计算值不透明"，量不出它从哪儿来），类名这层仍按
+    // **同一个不透明值**压住。类名带哈希前缀，用后缀匹配，免得版本一变就失效。
+    `[class*="_sidebarCol"], [class*="_quietBars"] { background-color: #261f2e !important; }`,
+    // **不要**在这里给侧栏后代加悬停底色 ✗ —— 见上面第 2 条。
     // Windows 原生命中栏那条支路上，外壳的布局缺陷：收起按钮是
     // `[data-windows-titlebar] ._xxx_toggle{ position:fixed; left:12px }`（28px 见方，占 12→40），
     // 而同一行的品牌按钮是 `flex:1`、那一行 Windows 下 `padding:0` —— 两块从同一个 x 起，
@@ -182,6 +188,8 @@ export function ensureStyle() {
     // 给品牌行让出那个位置即可；收起态有更高特异性的规则（`._collapsed ._logoRow{padding:0}`）不受影响。
     // 类名带哈希前缀，同样用后缀匹配。
     `[data-windows-titlebar] [class*="_logoRow"] { padding-left: 40px !important; }`,
+    // 全局控件的悬停底色。⚠️ 名字带 `-solid` 却给了半透明值 —— 这是同一类「半透明自乘」的温床，
+    // 但它管的是**所有**控件的悬停反馈，不属于本次侧栏那处证据。先原样保留，不动没证据的地方。
     `body { --dsw-alias-interactive-bg-hover-solid: rgba(155,138,224,0.12) !important; }`,
     "#root { background-color: transparent !important; }",
     // 壁纸层（z -2）与可读性遮罩（z -1）：**不能**铺在 body 自己的背景上 ✗

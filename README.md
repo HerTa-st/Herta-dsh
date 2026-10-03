@@ -29,13 +29,18 @@
 **[`dsh-theme-herta`](https://github.com/HerTa-st/dsh-theme-herta)** —— 也可以单独安装
 （没装本插件的人，照样能只下主题）。
 
-> **现在还没"自带"。** 要让装了本插件的人一起拿到主题，还差三步：
-> 主题发到 npm → 本包加一条依赖 → 加一行 loader。进度见
-> [issue #7](https://github.com/HerTa-st/Herta-dsh/issues/7)。
+> **0.1.7 起本插件自带它。** 接线三件事都已落地：主题已发到 npm
+> （`dsh-theme-herta@0.1.0`）、本包把它列成依赖、`cordis.patch.yml` 里多了一行
+> 并列的 `ui-theme-herta`。所以装了本插件就一起拿到主题，**不用再单独装**；
+> 装完照例要**关窗重开**（bundle 是启动期挂载的）。
 >
-> 在那之前，主题是**独立安装**的。本仓库里也放了同一份源码
-> （`theme/dsh-theme-herta/`），但它**不会**随插件一起装 —— 因为依赖与 `files`
-> 都还没加；**别先加 `files`**（那只会让每次安装多带约 3 MB 图，却没有任何用处）。
+> 主题包自己的 `cordis.patch.yml` 不会被自动应用 —— loader 只读 profile 的
+> `dsh.profile.bundles` 里那些包的 patch，所以挂载点必须由本包给出。
+>
+> 本仓库里也放了同一份源码（`theme/dsh-theme-herta/`）。⚠️ 主题的
+> `NOTICE.md` 记着一条**未决的授权边界**：`lib/opening/` 那 10 个文件移植自
+> `PersonaCLI/Herta`，而那个上游**未标注标准许可证**（GitHub 读作
+> `NOASSERTION`）—— 用之前请自己与上游确认。
 
 四层，各自独立可验：
 
@@ -694,6 +699,48 @@ MIT 范围内**，权利归米哈游及各自所有者。本仓库已按《崩�
 ---
 
 ## 版本历史
+
+### v0.1.7
+
+**装完就有主题** —— 紫罗兰配色、开机 ASCII 开场、可换背景与「黑塔外观」设置页，
+现在随插件一起装（主题包 `dsh-theme-herta@0.1.0` 成了本包的依赖，
+`cordis.patch.yml` 多一行并列挂载）。另把「产物不再可手工修补」的构建收口做完，
+并拆开叙述层的依赖通道与诊断总线。
+
+- **自带主题**：三件事一次做完 —— `dependencies` 加 `dsh-theme-herta@^0.1.0`、
+  `files` 加 `theme/`、`cordis.patch.yml` 里与 `id: herta` 并列插一条
+  `id: ui-theme-herta`。loader 行**必须由本包给出**：主题包自己的 `cordis.patch.yml`
+  不会被自动应用（loader 只从 profile 的 `dsh.profile.bundles` 里挑 bundle 的 patch），
+  它只是本包的依赖、它的 patch 谁也不会去读。实测（dsh 0.2.0-rc.2）：装载器能按名字
+  解析到它、宿主半侧挂载成功；重复的 loader 条目 id 也只被覆盖、不炸启动。
+  主题内容与**授权边界**见它的 [`NOTICE.md`](https://github.com/HerTa-st/dsh-theme-herta/blob/main/NOTICE.md)
+  —— `lib/opening/` 那 10 个文件移植自 `PersonaCLI/Herta`，该上游未标注标准许可证。
+- **主题接线后暴露的四处界面问题**：壁纸不再从左侧栏透出来（在那一栏下垫等价不透明底）；
+  「选项高光叠了两层」（侧栏底 × 选中行 × 通配悬停，三层半透明相乘）修掉；
+  Windows 下品牌字不再被「收起侧边栏」按钮压住；会话里那条提示不再只剩 emoji 看得见
+  （改取 DSH 的 `--dsw-alias-label-primary`，底与墨同源）。另把 `deploy.mjs` 的
+  本地镜像集补上 `theme/`，否则 `file:` 安装「有主题却看不到主题」。
+- **产物不再可手工修补（ADR-0003）**：esbuild **固定 0.25.12**（删掉候选列表，
+  找不到就报错）、删除 8 个 `reapply-*.mjs`（靠字符串锚点给 bundle 打补丁，
+  锚点对不上就静默漏改）、pre-commit 强制「`npm run build` 之后 `lib/` 无 diff」。
+  代价写在 ADR 里：**没有 esbuild 的机器不能出产物**。
+- **一个设置字段 = 改一个描述符（ADR-0004）**：展示元数据（`group` / `hint` /
+  `enumLabels` / `widget`）住进字段描述符，`settings-groups.js` **整个删除**。
+  此前加一个字段要同时改五处，漏一处就是渲染事故 —— 09-27「整组一行不渲染」与
+  10-01「渲染两遍」两次都真发生过。测试从「两张名单对账」换成「单源自洽」+ 防复发断言。
+- **叙述层：依赖通道与诊断总线拆开**：原先挤在同一个 `globalThis` 对象里（依赖
+  `marks.ctx` / `marks.llm` 与 69 个诊断字段），外部无法区分谁写、何时就绪。
+  现在拆成 `host-deps.js`（依赖通道）与 `host-marks.js`（诊断总线，那个对象只有这一处创建）；
+  顺带把 `{ kind: "plugin:dsh-herta" }` 收成唯一常量、设置命名空间收成单源。
+- **测试不再 grep 源码，改为穿过 interface**：新增 `test-narrative-layer.mjs`
+  （用假 ctx 记录 `on(event, fn)` 的清单与**顺序**，再真的调用那些 handler）、
+  `test-http-json.mjs`（413 之后不再写第二份响应 —— 那是被 TCP RST 截掉的真事故）、
+  `test-tar-extract.mjs`；`test-source-kind.mjs` 重写成断言常量形状；
+  `test-subagent-skip.mjs` **删除**（三条断言已由运行时测试覆盖）。
+- **仍未接**：主题 `lib/opening/` 的上游授权未决；外观设置存在浏览器本地
+  （换机器不带走）；MiMo 合成器仍无调用点；`theme` / `deviceScene` 两个字段仍未接线；
+  本地合成常驻化未落地。
+- 测试：**核心 26 组 1020 项 + MiniMax 6 组 390 项 = 1410 项全过、0 失败**。
 
 ### v0.1.6
 

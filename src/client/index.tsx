@@ -1364,6 +1364,18 @@ function HertaPanel(props: { bubbles: readonly Bubble[]; voiceCues: readonly Voi
       label,
     );
 
+  // 这一条的墨色**不能靠 `color: inherit`** ⚠️
+  //
+  // 别的行都坐在自己那块底板（`ACTION_BUTTON_STYLE` 那套带 `bg-layer-2`）上；这条不是 ——
+  // 它没有底板，直接压在主题铺的壁纸上。继承来的颜色出自 Herta 的 `:host{color:var(--ink)}`，
+  // 而 `--ink` 只有宿主带 `data-theme="dark"` 时才是浅色；那个属性又只看
+  // `documentElement.style.colorScheme`（= DSH 的色板偏好）。主题那边是**锁深色**的：
+  // 它把 `data-ds-dark-theme` 盯住不放、`html` 底也照 #17131d 铺，却不碰 `color-scheme`
+  // （碰了会改原生标题栏的绘制）。于是「DSH 偏好浅色 + 主题锁深色」这一档里两层打架：
+  // 底是深的、墨是 #111417 的 → 整条只剩 emoji 看得见（emoji 的颜色由字体给，不吃 color）。
+  //
+  // 所以直接取 DSH 的 label 令牌 —— 它正是**当前胜出的那层色板**的墨色（主题那层带
+  // `!important`，压得住 DSH 的 inline 值），底和墨从此同源。本文件其余控件也都用它。
   const bar = createElement(
     "div",
     {
@@ -1374,6 +1386,7 @@ function HertaPanel(props: { bubbles: readonly Bubble[]; voiceCues: readonly Voi
         flexWrap: "wrap",
         padding: "8px 16px",
         opacity: 0.85,
+        color: "var(--dsw-alias-label-primary)",
       },
     },
     [
