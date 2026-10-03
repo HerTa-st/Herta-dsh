@@ -920,7 +920,7 @@ function dispatchMiniMaxFrame(frame: Record<string, unknown>): void {
   if (frame.voice !== undefined || frame.synth !== undefined || frame.kind === "state") {
     miniMaxState = frame;
     markMinimax("minimaxEngine", frame.engine);
-    markMinimax("minimaxEngineNote", frame.engineNote ?? null);
+    markMinimax("minimaxEngineNote", frame.engineReason ?? null);
     notifyMiniMax();
   }
 }
@@ -2637,7 +2637,7 @@ function createSettingsSection(ui: unknown) {
    *
    * 「她怎么没声了」有六种完全不同的原因（没密钥 / 认领失败 / 额度用完 / 在冷却 /
    * 回落到本地 / 到了每轮上限），而它们在界面上原来长得一模一样 —— 全是「没声音」。
-   * 把 `engine`、`engineNote`、`voice.phase`、`lastError`、`retryAt`、
+   * 把 `engine`、`engineReason`、`voice.phase`、`lastError`、`retryAt`、
    * `maxTurnChars`、`clients` 一起摆出来，就是为了让每一种原因都能被认出来，
    * 而不是让人去翻日志。
    */
@@ -2651,7 +2651,7 @@ function createSettingsSection(ui: unknown) {
     }, []);
 
     const engine = typeof state?.engine === "string" ? state.engine : "未知";
-    const engineNote = typeof state?.engineNote === "string" && state.engineNote !== "" ? state.engineNote : null;
+    const engineNote = typeof state?.engineReason === "string" && state.engineReason !== "" ? state.engineReason : null;
     const keyKnown = state?.keyKnown === true;
     const voice = (state?.voice ?? {}) as {
       phase?: unknown;
