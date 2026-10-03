@@ -162,15 +162,18 @@ export function ensureStyle() {
     // 左侧那栏：**正解是改令牌** ✓ —— 参照物点的就是 `--dsw-specific-sidebar-*` 这一族
     // （fill / nav-item-hover / nav-item-active / active-accent），侧栏的底与悬停都归它们管。
     // 我上一版用类名硬压是错的解法 ✗（悬停会跳成不透明，正因为它另有出处）。
+    //
+    // ⚠️ fill 保持半透明（那是主题想要的"面板浮在壁纸上"），但**下面必须垫一层不透明的同色底**：
+    // 半透明底色本身挡不住壁纸 —— 壁纸的图案会从整栏（以及行、字）里透出来，看起来像重影。
+    // 在那一行下面垫 `#261f2e`（正好是 `rgba(38,31,46,·)` 的不透明形式）即可：
+    // 令牌的透明度对着不透明底算，结果就是纯色；行与字的悬停态都在这层之上，不受影响。
     "body {" +
       " --dsw-specific-sidebar-fill: rgba(38,31,46,0.64) !important;" +
       " --dsw-specific-sidebar-nav-item-hover: rgba(155,138,224,0.10) !important;" +
       " --dsw-specific-sidebar-nav-item-active: rgba(155,138,224,0.16) !important;" +
       " --dsw-specific-sidebar-nav-item-active-accent: #9b8ae0 !important; }",
-    // 兜底：万一那栏没吃令牌（探针只量到"计算值不透明"，量不出它从哪儿来），
-    // 类名这层仍按**同一个值**压住 —— 两处指向同一个数，就不会又出现不一致。
-    `[class*="_sidebarCol"], [class*="_quietBars"] {` +
-      " background-color: var(--dsw-specific-sidebar-fill, rgba(38,31,46,0.64)) !important; }",
+    // 那层不透明底。类名带哈希前缀，用后缀匹配，免得版本一变就失效。
+    `[class*="_sidebarCol"], [class*="_quietBars"] { background-color: #261f2e !important; }`,
     // 悬停：令牌 + 一点兜底，别跳成不透明。**不去改它的 transition** ✗ ——
     // 参照物根本不碰过渡，因为它的悬停本来就是半透明的，淡入淡出无所谓。
     `[class*="_sidebarCol"] *:hover, [class*="_quietBars"] *:hover {` +
