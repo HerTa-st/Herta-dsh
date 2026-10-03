@@ -37,13 +37,15 @@ import {
   normalizeVoiceSettings,
 } from "../host/voice-settings-shared.js";
 // 设置字段表：与宿主**同一份**（无 import 的纯数据模块，esbuild 直接内联）。
-// 页面的标签、枚举选项、默认值、以及「哪些字段整机真的会读」全部从它读 ——
-// 客户端不再自持第二份字段清单。
-import { FIELDS, normalizeSettings, UNWIRED_FIELD_NAMES } from "../host/settings-schema.js";
-// 分组表从宿主侧那份**纯数据**模块读（与 settings-schema 同一套理由：build.mjs 把
-// `src/host/*.js` 平铺进 `lib/`，客户端那份由 esbuild 内联）。同一份名单也被
-// `scripts/test-herta-settings.mjs` 导入 —— 于是「字段进了分组」这件事有单测兜底。
-import { SETTINGS_GROUPS } from "../host/settings-groups.js";
+// 页面的标签、枚举选项、默认值、「哪些字段整机真的会读」、**展示元数据**
+// （分组归属 / 枚举中文 / 行内提示 / 引擎行逐档文案）全部从它读 ——
+// 客户端不再自持第二份字段清单或展示表（2026-10-03 收编，原先散着六张）。
+import {
+  FIELDS,
+  normalizeSettings,
+  SETTINGS_GROUPS,
+  UNWIRED_FIELD_NAMES,
+} from "../host/settings-schema.js";
 // MiniMax 语音的两件纯逻辑：base64 → Int16 PCM 的解码，与按 utteranceId/seq 交付的
 // 播放队列状态机。**零 import** 是刻意的 —— 它能被 Node 直接单测
 // （`scripts/test-minimax-pcm.mjs`），所以「顺序 / 去重 / 打断 / 停止」这些最容易
@@ -1842,10 +1844,12 @@ function HertaFullView(props: {
 // 写入直接 `form.set(field, value)`（它自己带 revision 栅栏、串行化、失败重读）。
 // 乐观更新是没必要的 —— 宿主接受后镜像会自己推进一帧。
 
-// 分组表（`SETTINGS_GROUPS`）从宿主那份纯数据模块 import —— 见文件顶部那条 import
-// 的注释。2026-09-28 之前它是这里的一个局部常量，于是 `voiceEngine` /
-// `realtimeVoice` 被标成 `wired: true` 之后从「暂未接线」组掉出去、又没人加进这里，
-// 两个字段在页面上**一行都不渲染**，而且没有任何测试能发现（现在有了）。
+// 分组表、枚举中文、行内提示、引擎行逐档文案**都在字段描述符里**
+// （`src/host/settings-schema.js`），本文件 2026-10-03 之前那六张平行表
+// （`ENUM_LABELS` / `FIELD_HINTS` / `ENGINE_NOTES|BADGES|SUMMARY|FACTS`）已删除。
+// 教训：`voiceEngine` / `realtimeVoice` 被标成 `wired: true` 之后从「暂未接线」组
+// 掉出去、又没人加进分组表 —— 两个字段在页面上**一行都不渲染**；`theme` /
+// `deviceScene` 摘出分组时两边名单不同步，**渲染了两遍**。现在一处声明。
 
 /**
  * 「暂未接线」那一组的说明。逐行的原因写在字段表的 `note` 里 ——
@@ -1900,143 +1904,32 @@ const CREDENTIALS = [
  */
 const NETDISK_URL = "https://pan.baidu.com/s/1k-47zy6TTDWl0OaT2WCFUg?pwd=y195";
 
-/** 枚举值的中文文案。键必须与字段表里的取值域一致（不一致就原样显示英文值）。 */
-const ENUM_LABELS = {
-  locale: { "": "跟随系统", zh: "中文", en: "English" },
-  interactionLanguage: { follow: "跟随界面", zh: "中文", en: "English" },
-  theme: { system: "跟随系统", light: "浅色", dark: "深色" },
-  voiceEngine: { local: "本地模型", minimax: "MiniMax 克隆", fish: "Fish Audio 克隆", mimo: "MiMo 合成" },
-  fishPreset: { terminal_textured: "带噪声", terminal: "纯净" },
-  backendThinking: { low: "low", high: "high", max: "max" },
-  backendContract: { standard: "standard", minimal: "minimal" },
-  modelsActor: { "deepseek-v4-pro": "V4 Pro", "deepseek-flash": "V4.1 Flash" },
-  modelsBackend: { "deepseek-v4-pro": "V4 Pro", "deepseek-flash": "V4.1 Flash" },
-};
-
 /**
- * 每项的说明。
+ * 引擎那一行的逐档文案。**住在字段描述符里**（`FIELDS.voiceEngine.engine`），
+ * 这里只是取出来给下面几处用 —— 2026-10-03 之前它是本文件里的四张
+ * `ENGINE_NOTES|BADGES|SUMMARY|FACTS` 平行表。
  *
- * 「暂未接线」那几项这里只写**它是什么**，为什么不生效写在字段表的 `note` 里
- * （那一行由页面自动渲染，来源就是字段表本身，不在这儿抄第二遍）。
- * 特别不能写「她那边重启后生效」——那些项现在连一次生效的机会都没有。
+ * 结构（为什么不是段落）：原来 84 字的说明堆在卡片左列折成 4~6 行 ——
+ * `badges` 短标签一行扫完、`summary` 一句不超行、`facts` 展开后整宽三列。
+ * 文案要短：`fish` 第一版 84 字是当时最长的一条，那正是那段 UI 变难看的直接原因。
  */
-const FIELD_HINTS = {
-  locale: "整机界面自己的语言。「跟随系统」= 不写这个键，按操作系统语言解析。",
-  interactionLanguage: "她被提示用哪种语言说话。",
-  theme: "整机界面的明暗。",
-  closeToTray: "点窗口关闭时收进托盘还是退出。",
-  autoUpdate: "自动检查更新。",
-  deviceScene: "差分协处理器页上的 3D 设备卡。",
-  voiceEngine: "她说话用哪个引擎。改完立刻生效 —— 宿主每一轮都现读这个值。",
-  realtimeVoice: "「自动念回复」的总开关。关掉就不再自动把回复送去合成（不再花钱）；herta_say 与「试听」不受它管。",
-  voiceMuted: "关掉她所有的语音播放。立刻生效。",
-  voiceVolume: "语音播放的音量（0–100）。立刻生效。",
-  fishRef: "fish.audio 上的音色模型 ID。默认是大黑塔；换成别的角色只要改这一行。",
-  fishSpeed: "语速。1 是模型原始速度。",
-  fishEffect: "信道音效：400Hz–5.5kHz 带通 + 饱和，更像游戏里透过终端说话。关掉就是 Fish 原声。",
-  fishPreset: "terminal_textured 多一层跟着语音走的噪声；terminal 是同一套滤波但不加噪声。",
-  fishProxy: "两条接口都不通时才需要（插件默认先走 fishaudio.org，国内可直连）。留空则依次看 fish_config.json 的 proxy、环境变量 HTTPS_PROXY / HTTP_PROXY。",
-  workspace: "整机的工作区根目录（绝对路径）。",
-  dreamEnabled: "她空闲时自己写废案。",
-  backendThinking: "板砖的推理档位。",
-  backendContract: "板砖的工具契约。",
-  modelsActor: "驱动黑塔说话的模型。",
-  modelsBackend: "驱动板砖的模型。",
-};
-
-/**
- * 逐档的**现状**（是行为，不是偏好）—— 引擎行按当前选中值显示那一句。
- *
- * 四档里三档会真的出声：`local` 直连本地模型、`minimax` 云端优先（失败回落
- * 本地）、`fish` 走 Fish Audio 云端。`mimo` 的合成器**还没有调用点**，选它不会
- * 发声 —— 这一句必须写出来，而不是把选项藏起来（用户决策：保留全部档位 + 逐档标注）。
- *
- * `fish` 与 `minimax` 的区别在**失败时的行为**：`minimax` 失败会静默回落本地，
- * `fish` 失败**不回落**（用户明确选了这一档，换成别的声音比没声音更糟）——
- * 理由进 `engineNote`，用户看得见。
- *
- * 本地那一档的代价写在第二句里，数字是 2026-09-28 在本机直接跑 worker 量的：
- *   · **冷启动**（加载 addon + 85 MB 模型）2.7–4.4 s，其中模型加载 2.6–3.7 s；
- *   · 加载完之后**每句只付推理**，约音频时长的 0.28 倍（3.5 s 的音频 ~1.0 s，
- *     短句 ~0.25 s）—— 于是她念得比播放还快。
- * 所以本地合成现在走**常驻进程**（`src/host/tts-runtime.js`）：切到这一档时就顺手
- * 预热，空闲 10 分钟自动退掉还内存；第一次仍可能要等一次加载。
- */
-const ENGINE_NOTES: Record<string, string> = {
-  local:
-    "离线合成：不花钱、不需要网络。合成进程会常驻（切到这一档就先预热），热起来后每句只付推理；首次、或空闲回收之后，要重新加载模型约 3 秒。",
-  minimax:
-    "云端合成：边写边念。云端不可用（没密钥 / 没认领到克隆 / 被拒绝）时自动回落本地模型，回落原因写在下面「MiniMax 语音」那一行。",
-  fish:
-    "云端合成（Fish Audio）：44.1kHz，音色是站上训练好的大黑塔角色模型。需要联网，台词会传到 fish.audio；参数在下面「Fish 语音」那一组里调。",
-  mimo: "合成器尚未接线（宿主侧 mimo-tts.js 还没有调用点），选它不会发声。",
-};
+const ENGINE_META = (
+  FIELDS.voiceEngine as {
+    engine: {
+      notes: Record<string, string>;
+      badges: Record<string, readonly string[]>;
+      summary: Record<string, string>;
+      facts: Record<string, readonly (readonly [string, string])[]>;
+    };
+  }
+).engine;
 
 /** 引擎值 → 中文档位名（缺了就原样显示，与 `EnumControl` 同口径）。 */
 function engineLabel(engine: unknown): string {
   const value = typeof engine === "string" ? engine : "";
-  const labels = (ENUM_LABELS as Record<string, Record<string, string>>).voiceEngine ?? {};
+  const labels = (FIELDS.voiceEngine.enumLabels ?? {}) as Record<string, string>;
   return labels[value] ?? value;
 }
-
-/**
- * 语音引擎那一行的**结构化文案**。
- *
- * ## 为什么不再用段落
- *
- * 原来这一行是三段散文（提示 31 字 + 引擎说明 69~84 字 + 本地状态 55 字），
- * 堆在卡片左半边那一列里（宽约 550px）—— 结果折成 4~6 行，**堆成一条竖向长条**，
- * 右边控件下方留一大片空白，整行高度还跟别的设置行对不齐。
- *
- * 改法：
- *   · `badges`  —— 3 个短标签，一行扫完，替代那段 84 字的说明；
- *   · `summary` —— 一句不长于一行的话，补充标签装不下的语义；
- *   · `facts`   —— 「标签 / 值」小格，展开后**整宽三列**排开，不再是横贯长句。
- *
- * 文案自己也要短。第一版 `fish` 那档写了 84 字，是当时最长的一条，
- * **那是这段 UI 变难看的直接原因**。
- */
-const ENGINE_BADGES: Record<string, string[]> = {
-  local: ["离线", "无需联网", "零成本"],
-  minimax: ["云端", "边写边念", "失败回落"],
-  fish: ["云端", "44.1kHz", "需联网"],
-  mimo: ["未接线", "不发声"],
-};
-
-const ENGINE_SUMMARY: Record<string, string> = {
-  local: "在本机跑，合成进程常驻，热起来后比播放还快。",
-  minimax: "MiniMax 合成；不可用时自动回落本地模型，原因写在下面。",
-  fish: "Fish Audio 合成，音色是站上训练好的角色模型。",
-  mimo: "宿主侧还没有调用点，选它不会出声。",
-};
-
-const ENGINE_FACTS: Record<string, [string, string][]> = {
-  local: [
-    ["需要网络", "否"],
-    ["采样率", "24 kHz"],
-    ["音色来源", "模型内置（不可换）"],
-    ["开销", "零成本"],
-  ],
-  minimax: [
-    ["需要网络", "是"],
-    ["失败时", "回落本地模型"],
-    ["需要密钥", "MINIMAX_API_KEY"],
-    ["克隆音色", "需套餐"],
-  ],
-  fish: [
-    ["需要网络", "是"],
-    ["采样率", "44.1 kHz"],
-    ["台词上传", "传到 fish.audio"],
-    ["音色来源", "站上训练的角色模型"],
-    ["可换音色", "是"],
-    ["参数位置", "下面「Fish 语音」组"],
-  ],
-  mimo: [
-    ["需要网络", "—"],
-    ["状态", "合成器未接线"],
-    ["能否发声", "否"],
-  ],
-};
 
 /** 选择器要用的空数组常量：引用必须稳定，否则 useSyncExternalStore 会自激。 */
 const EMPTY_WORKSPACES = Object.freeze([]);
@@ -2167,7 +2060,7 @@ function createSettingsSection(ui: unknown) {
   /** 分段选择器；取值域直接来自字段表，所以加一项不用改这里。 */
   function EnumControl(props: { field: string; value: unknown; disabled?: boolean; onChange: (next: string) => void }): unknown {
     const spec = FIELDS[props.field];
-    const labels = (ENUM_LABELS as Record<string, Record<string, string>>)[props.field] ?? {};
+    const labels = (spec.enumLabels ?? {}) as Record<string, string>;
     const options = (spec.values as readonly string[]).map((value) => ({
       value,
       label: labels[value] ?? value,
@@ -2464,7 +2357,7 @@ function createSettingsSection(ui: unknown) {
    * ## 为什么不走通用的 `Row` + `fieldRow`
    *
    * 这一行要多三样**不是字段**的东西：
-   *   ① 逐档「现在到底会不会出声、要付什么代价」的一句说明（`ENGINE_NOTES`）；
+   *   ① 逐档「现在到底会不会出声、要付什么代价」的一句说明（`FIELDS.voiceEngine.engine.notes`）；
    *   ② 本地模型 / 运行时的**真探测**结果 —— 同一份 `/herta-voice-model` 镜像，
    *      与「整机动作 › 本地语音模型」那行共用（不另开一次 HTTP）；
    *   ③ 试听按钮与它的结果。
@@ -2583,7 +2476,7 @@ function createSettingsSection(ui: unknown) {
 
     /** 展开后的「标签 / 值」小格。整宽三列 —— 不是横贯的长句。 */
     const facts = [
-      ...(ENGINE_FACTS[engine] ?? []),
+      ...(ENGINE_META.facts[engine] ?? []),
       // 本机事实：两个云端档也会回落本地，所以这几项对它们同样有用。
       ["本地模型", phaseText] as [string, string],
       ["运行时", runtimeReady ? "可用" : "缺失"] as [string, string],
@@ -2681,11 +2574,11 @@ function createSettingsSection(ui: unknown) {
             borderTop: "1px solid var(--dsw-alias-border-l)",
           },
         },
-        ...(ENGINE_BADGES[engine] ?? []).map(badge),
+        ...(ENGINE_META.badges[engine] ?? []).map(badge),
         createElement(
           "span",
           { style: { ...HINT_STYLE, marginTop: 0, flex: "1 1 auto", minWidth: 0 } },
-          ENGINE_SUMMARY[engine] ?? "",
+          ENGINE_META.summary[engine] ?? "",
         ),
         createElement(
           "button",
@@ -2997,8 +2890,9 @@ function createSettingsSection(ui: unknown) {
       const spec = (FIELDS as Record<string, any>)[field];
       const value = (values as Record<string, unknown>)[field];
       // 引擎那一行不是「标签 + 一个控件」：它还有逐档现状、本地就绪、试听。
-      // 通用形状装不下，所以单开一个组件（其余字段照旧由 `kind` 决定控件）。
-      if (field === "voiceEngine") {
+      // 通用形状装不下 —— 所以由描述符的 `widget` 指名（**不是**按字段名硬编码：
+      // 加一个同样形状的字段时，这里一行都不用改）。
+      if (spec.widget === "engineRow") {
         return createElement(VoiceEngineRow, {
           key: field,
           value,
@@ -3043,7 +2937,7 @@ function createSettingsSection(ui: unknown) {
       return createElement(Row, {
         key: field,
         label: spec.label,
-        hint: FIELD_HINTS[field],
+        hint: spec.hint,
         // 「暂未接线」的逐行原因来自字段表本身（`FIELDS[field].note`）——
         // 页面不抄第二遍，所以字段表改了这里跟着改。
         note: typeof spec.note === "string" ? spec.note : undefined,
@@ -3063,18 +2957,29 @@ function createSettingsSection(ui: unknown) {
         ...rows,
       );
 
-    const wiredGroups = SETTINGS_GROUPS.map((entry) =>
-      group(
+    /**
+     * 组尾挂件：声明里的**名字** → 渲染器。
+     *
+     * 名字是数据（在字段表的 `GROUP_DECLARATION` 里），组件在这里注册 —— 于是
+     * 「哪一组末尾挂什么」不需要拿显示文案当逻辑 key（2026-10-03 之前是
+     * `entry.title === "语音"`，改个组标题就会静默丢掉那行状态）。
+     */
+    const GROUP_TRAILERS: Record<string, () => unknown> = {
+      "minimax-voice": MiniMaxVoiceRow,
+    };
+
+    const wiredGroups = SETTINGS_GROUPS.map((entry) => {
+      const trailer = GROUP_TRAILERS[(entry as { trailer?: string }).trailer ?? ""];
+      const rows = entry.fields.map(fieldRow);
+      return group(
         entry.title,
         (entry as { hint?: string }).hint,
         // 「语音」那一栏末尾多一行宿主事实（认领状态 + 重新认领）。它**不是**设置
-        // 字段，所以不来自字段表；按 title 挂在这里，是因为它讲的是上面那几行的
-        // **后果**（谁在说话、为什么回落、到没到上限）—— 先选，再看状态。
-        entry.title === "语音"
-          ? [...entry.fields.map(fieldRow), createElement(MiniMaxVoiceRow, { key: "minimax-voice" })]
-          : entry.fields.map(fieldRow),
-      ),
-    );
+        // 字段，所以不来自字段表；挂在组尾是因为它讲的是上面那几行的**后果**
+        // （谁在说话、为什么回落、到没到上限）—— 先选，再看状态。
+        trailer === undefined ? rows : [...rows, createElement(trailer, { key: (entry as { trailer?: string }).trailer })],
+      );
+    });
 
     const credentialsGroup = group(
       "密钥",

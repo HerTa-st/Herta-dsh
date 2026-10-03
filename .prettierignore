@@ -1,0 +1,28 @@
+# Prettier 不管这些文件 —— 两类，各有硬理由。
+#
+# ## 1. 构建产物：格式化器写进产物会让 pre-commit 自己的门当场变红
+#
+# `lib/` 与 `preset/` 是 `npm run build` / `build:preset` 的输出，随提交进仓库
+# （ADR-0003：产物只经 build 生成、不可手工修补）。`.husky/pre-commit` 的顺序是
+# lint-staged（prettier）→ `npm run build` → `git diff --exit-code -- lib`；
+# 如果 lint-staged 先把 `lib/client.js` 重排进了 index，build 再覆盖工作区，
+# 那一步 diff 必然非空 —— 提交就被自己的门挡死。而 `lib/client.js` 是 493 KB 的
+# esbuild bundle、`preset/*.patch.yml` 是拼出来的补丁层，重排它们本身也没有意义。
+lib/
+preset/
+
+# ## 2. 手写的长文案 / 断言表：printWidth=80 在这里是破坏性的
+#
+# 这些文件在引入 pre-commit 之前就是长行风格，而且长行大多**拆不开**（中文提示语、
+# 断言标签都是字符串字面量）。实测重排规模：
+#
+#   · `src/client/index.tsx`          3178 → 3609 行（+431）
+#   · `scripts/test-herta-settings.mjs`  445 → 764 行（+319，断言列表被逐行拆散）
+#   · `src/host/settings-schema.js`      621 →  657 行（+36，含 21 行与本次改动无关的旧代码重排）
+#
+# 其中 `index.tsx` 是两位开发者共享的文件（`CONTEXT.md`「共享文件」），整文件重排
+# 会与并发的分支大面积冲突 —— 收益（换行风格统一）远小于代价。
+src/client/index.tsx
+src/host/*.js
+src/host/*.cjs
+scripts/test-*.mjs

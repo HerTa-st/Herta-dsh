@@ -169,26 +169,20 @@ console.log("\n=== 没有写死的默认代理（回归守门）===");
   );
 }
 
-console.log("\n=== 设置页字段：schema / 分组表 / 宿主读取 ===");
+console.log("\n=== 设置页字段：schema / 分组归属 / 宿主读取 ===");
 {
   const schema = read("src/host/settings-schema.js");
-  const groups = read("src/host/settings-groups.js");
   const voice = read("src/host/minimax-voice.js");
+  // 分组归属也住在描述符里了（2026-10-03 收编）：原先它在一张独立的
+  // `settings-groups.js` 名单里，两张名单不同步就渲染事故。
+  const spec = schema.slice(schema.indexOf("fishProxy:"), schema.indexOf("fishProxy:") + 600);
   ok(
     /fishProxy:\s*Object\.freeze\(\{/.test(schema),
     "schema 里有 fishProxy 字段"
   );
   ok(/label:\s*"Fish 代理"/.test(schema), "字段名是「Fish 代理」");
-  ok(
-    /wired:\s*true/.test(
-      schema.slice(
-        schema.indexOf("fishProxy:"),
-        schema.indexOf("fishProxy:") + 400
-      )
-    ),
-    "fishProxy 标了 wired: true"
-  );
-  ok(/"fishProxy"/.test(groups), "分组表里挂进了某一组");
+  ok(/wired:\s*true/.test(spec), "fishProxy 标了 wired: true");
+  ok(/group:\s*"Fish 语音"/.test(spec), "fishProxy 声明挂在「Fish 语音」组里");
   ok(
     /fishProxy:\s*readStringField/.test(voice),
     "宿主把它传给了 fish-tts（fishProxy）"

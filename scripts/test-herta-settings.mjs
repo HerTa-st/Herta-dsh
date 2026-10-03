@@ -14,9 +14,11 @@
  *      写回意图 / 种子 / `sanitizeFollowedFields` 那一套
  *   5. **语音偏好真的接了 bridge**：`bridge.ts` 有三个新成员、
  *      `voice-prefs.ts` 有 `hydrateVoicePrefs`、`main.tsx` 调了它
- *   6. **每个活字段都会被渲染**：分组表（`src/host/settings-groups.js`）必须覆盖
- *      全部 `WIRED_FIELD_NAMES` —— `voiceEngine` / `realtimeVoice` 曾因为
- *      「已接线」与「在哪个组里」是两份名单而静默不渲染
+ *   6. **每个活字段都会被渲染**：每个 `wired` 字段都必须声明 `group`，且那个组名
+ *      必须在分组声明里 —— `voiceEngine` / `realtimeVoice` 曾因为「已接线」与
+ *      「在哪个组里」是两份名单而静默不渲染；`theme` / `deviceScene` 曾因为两边
+ *      不同步而渲染两遍。2026-10-03 起两边合并成一份（字段自己的 `group`），
+ *      所以这条断言变成了「单源自洽」而不是「两张名单对账」。
  *
  * 第 4、5、6 条读源码文本，不看运行时 —— 它们要防的是「下一次有人顺手加回来」，
  * 而不是某个函数的行为。这类断言只能这么写。
@@ -28,12 +30,13 @@ import {
   DEFAULTS,
   FIELD_NAMES,
   FIELDS,
+  SETTINGS_GROUPS,
   UNWIRED_FIELD_NAMES,
   WIRED_FIELD_NAMES,
+  groupOfField,
   isManagedValue,
   normalizeSettings,
 } from "../src/host/settings-schema.js";
-import { SETTINGS_GROUPS, groupOfField } from "../src/host/settings-groups.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -110,14 +113,16 @@ console.log("herta-settings");
   check("voiceMuted 默认不静音", DEFAULTS.voiceMuted === false);
 }
 
-// ── 1c. 每个活字段都真的会被渲染（防回归）──────────────────────────────────
+// ── 1c. 分组与展示元数据的单源自洽（防回归）────────────────────────────────
 // 2026-09-27 的真事：`voiceEngine` / `realtimeVoice` 被标成 `wired: true`（宿主
 // 真的按它们分发）之后，就被「暂未接线」那一组自动排除了，而分组表没有跟着加 ——
 // 于是这两个字段（连同「语音引擎」这一行）在设置页上**一行都不渲染**：改引擎只能
-// 手改 profile 的 `cordis.patch.yml`。两处名单各说各的，合起来就是"没有行"。
+// 手改 profile 的 `cordis.patch.yml`。2026-10-01 是同一病灶的另一面：`theme` /
+// `deviceScene` 从分组里摘掉时两边名单不同步，**渲染了两遍**。
 //
-// 页面只遍历两处：`SETTINGS_GROUPS` 的各组，与 `UNWIRED_FIELD_NAMES`。所以每个
-// 字段必须落在其中之一 —— 这就是这条断言要钉的接缝。
+// 2026-10-03 起分组归属与展示文案都住在字段描述符里（`SETTINGS_GROUPS` 从
+// `FIELDS[n].group` 派生），所以这里不再「对两张名单」，而是断言**这一份是自洽的**：
+// 每个活字段都有组、每个组都有字段、组内没有死字段、枚举标签与取值域对得上。
 {
   const grouped = new Set(SETTINGS_GROUPS.flatMap((entry) => entry.fields));
   const listed = SETTINGS_GROUPS.flatMap((entry) => entry.fields);
@@ -125,18 +130,94 @@ console.log("herta-settings");
   check("同一个字段不在分组表里出现两次", listed.length === grouped.size);
   check("分组表里的字段都是活字段（死字段该进「暂未接线」）", [...grouped].every((n) => WIRED_FIELD_NAMES.includes(n)));
   const missing = WIRED_FIELD_NAMES.filter((n) => !grouped.has(n));
-  check(`每个活字段都在某个设置分组里（缺的：${missing.join(",") || "无"}）`, missing.length === 0);
+  check(`每个活字段都声明了 group（缺的：${missing.join(",") || "无"}）`, missing.length === 0);
   check("「暂未接线」那组不与已接线的字段重叠", UNWIRED_FIELD_NAMES.every((n) => !grouped.has(n)));
+  check("没有空组（声明了组就得有字段）", SETTINGS_GROUPS.every((entry) => entry.fields.length > 0));
+  check(
+    "字段声明的 group 值都在分组声明里（拼错就落不进任何组）",
+    FIELD_NAMES.filter((n) => FIELDS[n].group !== undefined).every((n) =>
+      SETTINGS_GROUPS.some((entry) => entry.title === FIELDS[n].group),
+    ),
+  );
   check(
     "voiceEngine 与 realtimeVoice 都在「语音」组里",
     groupOfField("voiceEngine") === "语音" && groupOfField("realtimeVoice") === "语音",
   );
   check("不在任何分组里的字段返回 undefined", groupOfField("closeToTray") === undefined);
-  // 分组表只有一份：客户端必须 import 它，不许再抄一份在自己文件里。
+
+  // 枚举标签：键必须在取值域里（打错字就是静默显示英文值），且不能漏值。
+  const enumFields = FIELD_NAMES.filter((n) => FIELDS[n].kind === "enum");
+  check(
+    "每个 enum 字段都有 enumLabels",
+    enumFields.every((n) => FIELDS[n].enumLabels !== undefined),
+  );
+  check(
+    "enumLabels 的键都在取值域里（多了就是打错字）",
+    enumFields.every((n) => Object.keys(FIELDS[n].enumLabels ?? {}).every((k) => FIELDS[n].values.includes(k))),
+  );
+  check(
+    "enumLabels 覆盖全部取值（漏了就显示英文值）",
+    enumFields.every((n) => FIELDS[n].values.every((v) => Object.hasOwn(FIELDS[n].enumLabels ?? {}, v))),
+  );
+
+  // 行内提示：每个字段都要说清「它是什么」。
+  check(
+    "每个字段都有 hint",
+    FIELD_NAMES.every((n) => typeof FIELDS[n].hint === "string" && FIELDS[n].hint.length > 0),
+  );
+
+  // 引擎行的逐档文案：四张表都从描述符来，取值域必须逐档对齐。
+  const engineValues = FIELDS.voiceEngine.values;
+  const engineMeta = FIELDS.voiceEngine.engine;
+  check("voiceEngine 声明了 engine 逐档文案", engineMeta !== undefined);
+  check(
+    "每一档都有 notes / badges / summary / facts",
+    engineValues.every(
+      (v) =>
+        typeof engineMeta.notes[v] === "string" &&
+        Array.isArray(engineMeta.badges[v]) &&
+        typeof engineMeta.summary[v] === "string" &&
+        Array.isArray(engineMeta.facts[v]),
+    ),
+  );
+  check(
+    "逐档文案没有多出取值域之外的档",
+    Object.keys(engineMeta.notes).every((v) => engineValues.includes(v)),
+  );
+
+  // 描述符指名的 widget / trailer：客户端必须真认得（否则那一行静默退回通用形状，
+  // 或者组尾那行状态悄悄消失）。
   const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
-  check("客户端 import 了 settings-groups.js", clientText.includes('from "../host/settings-groups.js"'));
-  check("客户端没有再抄一份 SETTINGS_GROUPS 常量", !/const\s+SETTINGS_GROUPS\s*=/.test(clientText));
+  const declaredWidgets = [...new Set(FIELD_NAMES.map((n) => FIELDS[n].widget).filter(Boolean))];
+  const handledWidgets = new Set([...clientText.matchAll(/spec\.widget === "([^"]+)"/g)].map((m) => m[1]));
+  check(
+    `每个声明的 widget 客户端都认（缺的：${declaredWidgets.filter((w) => !handledWidgets.has(w)).join(",") || "无"}）`,
+    declaredWidgets.every((w) => handledWidgets.has(w)),
+  );
+  const declaredTrailers = [...new Set(SETTINGS_GROUPS.map((e) => e.trailer).filter(Boolean))];
+  check(
+    `每个组的 trailer 客户端都注册了（缺的：${declaredTrailers.filter((t) => !clientText.includes(`"${t}":`)).join(",") || "无"}）`,
+    declaredTrailers.every((t) => clientText.includes(`"${t}":`)),
+  );
+
+  // 展示元数据只有一份：客户端必须从字段表读，不许再抄表。
+  //
+  // 下面三条「不许再这样写」的断言只看**代码**，不看注释 —— 本文件与
+  // `index.tsx` 都在注释里正当地引用旧写法（「2026-10-03 之前是拿组标题当 key」），
+  // 拿原文匹配会把说明文档本身判成违规（第一版就是这么红的）。
+  const clientCode = clientText.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("客户端从字段表读展示元数据", clientCode.includes('from "../host/settings-schema.js"'));
+  check("客户端没有再抄一份 SETTINGS_GROUPS 常量", !/const\s+SETTINGS_GROUPS\s*=/.test(clientCode));
+  check(
+    "客户端不再自持 ENUM_LABELS / FIELD_HINTS / ENGINE_* 平行表",
+    !/const\s+ENUM_LABELS\s*=/.test(clientCode) &&
+      !/const\s+FIELD_HINTS\s*=/.test(clientCode) &&
+      !/const\s+ENGINE_(NOTES|BADGES|SUMMARY|FACTS)\s*[:=]/.test(clientCode),
+  );
+  check("客户端按描述符的 widget 分派（不再按字段名硬编码）", !/field === "voiceEngine"/.test(clientCode));
+  check("客户端按 trailer 挂组尾（不拿显示文案当逻辑 key）", !/entry\.title === "/.test(clientCode));
 }
+
 
 // ── 2. 校验与归一化 ─────────────────────────────────────────────────────────
 {

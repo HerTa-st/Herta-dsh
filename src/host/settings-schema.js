@@ -77,14 +77,35 @@
  * 字段表。`def` 必须与整机那边的默认值逐字一致 —— 不一致的后果是
  * 「DSH 里显示的值」与「她实际在用的值」不同，而那是这个功能最不该出的错。
  *
- * 字段形状：
- *   · `kind`  —— `"boolean"` / `"enum"` / `"number"` / `"path"`
+ * 字段形状 —— **一个字段一个描述符**，它怎么校验、怎么展示、归哪一组都在这里：
+ *   · `kind`  —— `"boolean"` / `"enum"` / `"number"` / `"path"` / `"text"`
  *   · `values`—— 仅 enum：取值域
  *   · `min` / `max` / `step` —— 仅 number
  *   · `def`   —— 默认值
  *   · `label` —— 页面上的标签
  *   · `wired` —— 整机里有没有人读它（缺省视为 true）
  *   · `note`  —— 仅 `wired: false`：它本该由谁读、现在缺什么
+ *   · `group` —— 仅活字段：落在哪一组（组标题须在下面 `GROUP_DECLARATION` 里声明）
+ *   · `hint`  —— 标签下方那行「它是什么」
+ *   · `enumLabels` —— 仅 enum：取值 → 中文（缺了原样显示英文值）
+ *   · `widget` —— 需要专门控件的字段（目前只有 `voiceEngine: "engineRow"`）
+ *
+ * ## 2026-10-03：展示元数据收进描述符（架构审查 candidate #2）
+ *
+ * 分组归属、枚举中文、行内提示原先散在**四个模块的六张平行表**里
+ * （`settings-groups.js` 的组数组、客户端 `index.tsx` 的 `ENUM_LABELS` /
+ * `FIELD_HINTS` / `ENGINE_NOTES` / `ENGINE_BADGES` / `ENGINE_SUMMARY` /
+ * `ENGINE_FACTS`）。漏改任何一张就是渲染事故，两次都真发生过：
+ *
+ *   · 2026-09-27：`voiceEngine` / `realtimeVoice` 标成 `wired: true` 后从
+ *     「暂未接线」掉出去，而分组表没跟着加 —— 两个字段（连同整个「语音」组）
+ *     **一行都不渲染**；
+ *   · 2026-10-01：`theme` / `deviceScene` 摘出分组时两边名单不同步 ——
+ *     **渲染了两遍**。
+ *
+ * 现在**改一个字段 = 改这一个描述符**：分组表、枚举标签、行内提示、引擎行的
+ * 逐档文案全部从这里派生（见文件下半部分的 `SETTINGS_GROUPS` / `ENUM_LABELS` /
+ * `FIELD_HINTS`）。客户端不再自持任何字段清单。
  */
 export const FIELDS = Object.freeze({
   /**
@@ -96,6 +117,9 @@ export const FIELDS = Object.freeze({
     values: Object.freeze(["", "zh", "en"]),
     def: "",
     label: "界面语言",
+    group: "界面",
+    enumLabels: Object.freeze({ "": "跟随系统", zh: "中文", en: "English" }),
+    hint: "整机界面自己的语言。「跟随系统」= 不写这个键，按操作系统语言解析。",
   }),
   /**
    * 她被提示的语言。与 `locale` 独立，任意组合都合法。`follow` = 跟随 UI 语言。
@@ -108,6 +132,8 @@ export const FIELDS = Object.freeze({
     label: "对话语言",
     wired: false,
     note: "整机当前不读它：原来只有她自己的设置页在读写这个键。将来要接，应接在会话创建时的提示词语言上。",
+    enumLabels: Object.freeze({ follow: "跟随界面", zh: "中文", en: "English" }),
+    hint: "她被提示用哪种语言说话。",
   }),
   /**
    * 外观。整机默认 `"system"`。
@@ -123,6 +149,8 @@ export const FIELDS = Object.freeze({
     label: "主题",
     wired: false,
     note: "主题由 DSH 外壳自己管（设置页这一行改了不影响界面）。整机那边才由 initTheme 读它。",
+    enumLabels: Object.freeze({ system: "跟随系统", light: "浅色", dark: "深色" }),
+    hint: "整机界面的明暗。",
   }),
   /**
    * 点关闭是收进托盘还是退出。整机默认 `true`。
@@ -134,6 +162,7 @@ export const FIELDS = Object.freeze({
     label: "关闭时收进托盘",
     wired: false,
     note: "iframe 里没有窗口可收，DSH 也没有她的托盘图标。原来只有她自己的设置页读它。",
+    hint: "点窗口关闭时收进托盘还是退出。",
   }),
   /**
    * 自动检查更新。整机默认 `true`。
@@ -145,6 +174,7 @@ export const FIELDS = Object.freeze({
     label: "自动检查更新",
     wired: false,
     note: "更新由 electron-updater 在主进程完成，只有独立版有；DSH 不负责更新整机。",
+    hint: "自动检查更新。",
   }),
   /**
    * 3D 设备卡。整机默认 `true`（`DEVICE_SCENE_DEFAULT`）。
@@ -160,6 +190,7 @@ export const FIELDS = Object.freeze({
     label: "3D 设备卡",
     wired: false,
     note: "DSH 侧没有这条路：父窗口没有 get/setDeviceScene 分支，整机视图也还没实现。",
+    hint: "差分协处理器页上的 3D 设备卡。",
   }),
   /**
    * 谁在说话。默认 `"local"`；不是字符串的值一律折成 `local`（`readStringField`）。
@@ -184,6 +215,83 @@ export const FIELDS = Object.freeze({
     def: "local",
     label: "语音引擎",
     wired: true,
+    group: "语音",
+    enumLabels: Object.freeze({
+      local: "本地模型",
+      minimax: "MiniMax 克隆",
+      fish: "Fish Audio 克隆",
+      mimo: "MiMo 合成",
+    }),
+    hint: "她说话用哪个引擎。改完立刻生效 —— 宿主每一轮都现读这个值。",
+    /**
+     * 「语音引擎」那一行不是「标签 + 一个控件」：它还有逐档现状、本地就绪、试听。
+     * 通用 `kind` 决定不了这种形状，所以由 `widget` 指名专用渲染器
+     * （客户端注册表 `herta-settings-widgets`）。这里是**声明**，不是组件本身 ——
+     * 本模块保持纯数据、无 import。
+     */
+    widget: "engineRow",
+    /**
+     * 逐档的**结构化文案**（2026-10-03 从客户端五张 `ENGINE_*` 表收编）。
+     *
+     * 为什么不是段落：原来 84 字的说明堆在卡片左列折成 4~6 行，右边控件下方留一大片
+     * 空白 —— 于是拆成 `badges`（短标签一行扫完）/ `summary`（一句不超行）/
+     * `facts`（展开后整宽三列）。**文案要短**：`fish` 第一版 84 字是当时最长的一条，
+     * 那正是那段 UI 变难看的直接原因。
+     *
+     * `notes` 是逐档现状（是行为，不是偏好）：四档里三档真会出声，`mimo` 没有调用点 ——
+     * 这一句必须写出来，而不是把选项藏起来（用户决策：保留全部档位 + 逐档标注）。
+     * `fish` 与 `minimax` 的区别在**失败时**：`minimax` 静默回落本地，`fish` 不回落
+     * （换成别的声音比没声音更糟），理由由宿主写进状态行。
+     */
+    engine: Object.freeze({
+      notes: Object.freeze({
+        local:
+          "离线合成：不花钱、不需要网络。合成进程会常驻（切到这一档就先预热），热起来后每句只付推理；首次、或空闲回收之后，要重新加载模型约 3 秒。",
+        minimax:
+          "云端合成：边写边念。云端不可用（没密钥 / 没认领到克隆 / 被拒绝）时自动回落本地模型，回落原因写在下面「MiniMax 语音」那一行。",
+        fish: "云端合成（Fish Audio）：44.1kHz，音色是站上训练好的大黑塔角色模型。需要联网，台词会传到 fish.audio；参数在下面「Fish 语音」那一组里调。",
+        mimo: "合成器尚未接线（宿主侧 mimo-tts.js 还没有调用点），选它不会发声。",
+      }),
+      badges: Object.freeze({
+        local: Object.freeze(["离线", "无需联网", "零成本"]),
+        minimax: Object.freeze(["云端", "边写边念", "失败回落"]),
+        fish: Object.freeze(["云端", "44.1kHz", "需联网"]),
+        mimo: Object.freeze(["未接线", "不发声"]),
+      }),
+      summary: Object.freeze({
+        local: "在本机跑，合成进程常驻，热起来后比播放还快。",
+        minimax: "MiniMax 合成；不可用时自动回落本地模型，原因写在下面。",
+        fish: "Fish Audio 合成，音色是站上训练好的角色模型。",
+        mimo: "宿主侧还没有调用点，选它不会出声。",
+      }),
+      facts: Object.freeze({
+        local: Object.freeze([
+          Object.freeze(["需要网络", "否"]),
+          Object.freeze(["采样率", "24 kHz"]),
+          Object.freeze(["音色来源", "模型内置（不可换）"]),
+          Object.freeze(["开销", "零成本"]),
+        ]),
+        minimax: Object.freeze([
+          Object.freeze(["需要网络", "是"]),
+          Object.freeze(["失败时", "回落本地模型"]),
+          Object.freeze(["需要密钥", "MINIMAX_API_KEY"]),
+          Object.freeze(["克隆音色", "需套餐"]),
+        ]),
+        fish: Object.freeze([
+          Object.freeze(["需要网络", "是"]),
+          Object.freeze(["采样率", "44.1 kHz"]),
+          Object.freeze(["台词上传", "传到 fish.audio"]),
+          Object.freeze(["音色来源", "站上训练的角色模型"]),
+          Object.freeze(["可换音色", "是"]),
+          Object.freeze(["参数位置", "下面「Fish 语音」组"]),
+        ]),
+        mimo: Object.freeze([
+          Object.freeze(["需要网络", "—"]),
+          Object.freeze(["状态", "合成器未接线"]),
+          Object.freeze(["能否发声", "否"]),
+        ]),
+      }),
+    }),
   }),
   /**
    * 自动念回复的总开关。默认 `true`。
@@ -200,10 +308,18 @@ export const FIELDS = Object.freeze({
     def: true,
     label: "实时语音",
     wired: true,
+    group: "语音",
+    hint: "「自动念回复」的总开关。关掉就不再自动把回复送去合成（不再花钱）；herta_say 与「试听」不受它管。",
   }),
 
   /** 主语音静音。整机默认 `false`（原来存在渲染层 localStorage）。 */
-  voiceMuted: Object.freeze({ kind: "boolean", def: false, label: "静音" }),
+  voiceMuted: Object.freeze({
+    kind: "boolean",
+    def: false,
+    label: "静音",
+    group: "语音",
+    hint: "关掉她所有的语音播放。立刻生效。",
+  }),
   /**
    * 主音量，0–100（整机内部是 0–1，bridge 上换算）。
    * 整机默认 `100`（原来存在渲染层 localStorage）。
@@ -215,6 +331,8 @@ export const FIELDS = Object.freeze({
     step: 5,
     def: 100,
     label: "音量",
+    group: "语音",
+    hint: "语音播放的音量（0–100）。立刻生效。",
   }),
   fishRef: Object.freeze({
     kind: "text",
@@ -222,6 +340,8 @@ export const FIELDS = Object.freeze({
     placeholder: "f9ede0382ffc4671ac86b44d49f19cdd",
     label: "Fish 音色模型",
     wired: true,
+    group: "Fish 语音",
+    hint: "fish.audio 上的音色模型 ID。默认是大黑塔；换成别的角色只要改这一行。",
   }),
   fishSpeed: Object.freeze({
     kind: "number",
@@ -231,12 +351,16 @@ export const FIELDS = Object.freeze({
     def: 1,
     label: "Fish 语速",
     wired: true,
+    group: "Fish 语音",
+    hint: "语速。1 是模型原始速度。",
   }),
   fishEffect: Object.freeze({
     kind: "boolean",
     def: true,
     label: "Fish 信道音效",
     wired: true,
+    group: "Fish 语音",
+    hint: "信道音效：400Hz–5.5kHz 带通 + 饱和，更像游戏里透过终端说话。关掉就是 Fish 原声。",
   }),
   fishPreset: Object.freeze({
     kind: "enum",
@@ -244,6 +368,9 @@ export const FIELDS = Object.freeze({
     def: "terminal_textured",
     label: "Fish 音效档位",
     wired: true,
+    group: "Fish 语音",
+    enumLabels: Object.freeze({ terminal_textured: "带噪声", terminal: "纯净" }),
+    hint: "terminal_textured 多一层跟着语音走的噪声；terminal 是同一套滤波但不加噪声。",
   }),
   fishProxy: Object.freeze({
     kind: "text",
@@ -251,9 +378,11 @@ export const FIELDS = Object.freeze({
     placeholder: "http://127.0.0.1:7897（留空 = 直连）",
     label: "Fish 代理",
     wired: true,
+    group: "Fish 语音",
+    hint: "两条接口都不通时才需要（插件默认先走 fishaudio.org，国内可直连）。留空则依次看 fish_config.json 的 proxy、环境变量 HTTPS_PROXY / HTTP_PROXY。",
     // 这里**刻意不写 `note`**：按本仓约定，`note` 只说「为什么这个字段没接线」
     // （见 `test-herta-settings.mjs` 那两条互斥断言）。这一行是活字段，用法说明在
-    // 「Fish 语音」那一组的 hint 里、以及客户端 FIELD_HINTS 那份行内提示里。
+    // 「Fish 语音」那一组的组 hint 里、以及上面这条行内 `hint` 里。
   }),
 
   /**
@@ -286,6 +415,7 @@ export const FIELDS = Object.freeze({
     label: "同步到工作区",
     wired: false,
     note: "上一版用它决定「写回哪个工作区的 .herta\\settings.json」。写回已整体删除，所以它现在只被存下来。",
+    hint: "整机的工作区根目录（绝对路径）。",
   }),
 
   /**
@@ -298,6 +428,7 @@ export const FIELDS = Object.freeze({
     label: "做梦",
     wired: false,
     note: "做梦是整机自己的后台服务（独立版才有），DSH 会话里没有这条链路。",
+    hint: "她空闲时自己写废案。",
   }),
   /** 板砖的推理档位。整机默认 `"high"`。消费者：无（同上，属独立版后端）。 */
   backendThinking: Object.freeze({
@@ -307,6 +438,8 @@ export const FIELDS = Object.freeze({
     label: "推理档位",
     wired: false,
     note: "板砖是整机独立版的后端；DSH 会话走 DSH 自己的模型配置。",
+    enumLabels: Object.freeze({ low: "low", high: "high", max: "max" }),
+    hint: "板砖的推理档位。",
   }),
   /** 板砖的工具契约。整机默认 `"minimal"`。消费者：无（同上）。 */
   backendContract: Object.freeze({
@@ -316,6 +449,8 @@ export const FIELDS = Object.freeze({
     label: "工具契约",
     wired: false,
     note: "板砖是整机独立版的后端；DSH 会话走 DSH 自己的模型配置。",
+    enumLabels: Object.freeze({ standard: "standard", minimal: "minimal" }),
+    hint: "板砖的工具契约。",
   }),
   /** 黑塔本体的模型。整机默认 `"deepseek-v4-pro"`。消费者：无（同上）。 */
   modelsActor: Object.freeze({
@@ -325,6 +460,8 @@ export const FIELDS = Object.freeze({
     label: "黑塔的模型",
     wired: false,
     note: "DSH 里她的模型由会话自己的模型配置决定，这个键只有独立版的后端会读。",
+    enumLabels: Object.freeze({ "deepseek-v4-pro": "V4 Pro", "deepseek-flash": "V4.1 Flash" }),
+    hint: "驱动黑塔说话的模型。",
   }),
   /** 板砖的模型。整机默认 `"deepseek-flash"`。消费者：无（同上）。 */
   modelsBackend: Object.freeze({
@@ -334,11 +471,92 @@ export const FIELDS = Object.freeze({
     label: "板砖的模型",
     wired: false,
     note: "DSH 里板砖的模型由会话自己的模型配置决定，这个键只有独立版的后端会读。",
+    enumLabels: Object.freeze({ "deepseek-v4-pro": "V4 Pro", "deepseek-flash": "V4.1 Flash" }),
+    hint: "驱动板砖的模型。",
   }),
 });
 
-/** 全部字段名，声明顺序即字段表顺序（页面的分组另在客户端声明）。 */
+/** 全部字段名，声明顺序即字段表顺序。 */
 export const FIELD_NAMES = Object.freeze(Object.keys(FIELDS));
+
+/**
+ * 分组的**声明**：`[{ title, hint?, trailer? }, …]`，**数组顺序即页面顺序**。
+ *
+ * 这里只放「组本身」的事实（组级说明、组尾挂件、显示顺序）；**哪些字段属于它**
+ * 不在这儿 —— 那是字段自己的 `group`。两处名单曾经各说各话，于是
+ * 2026-09-27 漏渲染一整组、2026-10-01 渲染两遍（见 `FIELDS` 头部那段）。
+ *
+ * `trailer` 是**挂在组尾的客户端行渲染器名**（不是组件本身）：本模块保持纯数据、
+ * 无 import。目前只有「语音」组有 —— 它末尾那行宿主事实（认领状态 + 重新认领）
+ * 不是设置字段，讲的是上面几行的**后果**（谁在说话、为什么回落、到没上限）：
+ * 先选，再看状态。
+ */
+const GROUP_DECLARATION = Object.freeze([
+  Object.freeze({ title: "界面" }),
+  Object.freeze({
+    title: "语音",
+    hint: "这四个值都是宿主真在读的，改完立刻生效。静音只决定「听不听得见」，不决定要不要花钱合成。",
+    trailer: "minimax-voice",
+  }),
+  Object.freeze({
+    title: "Fish 语音",
+    hint: "只在「语音引擎」选 fish 时生效。这里的值**优先**于外部 fish_config.json —— 那边退化成「没设过时的兜底」。密钥不在这里：它在上面的「Fish 密钥」那一行，走 DSH 凭据存储，不落明文配置。**没声通常就是这一条**：网络到不了 Fish 接口 —— 插件按 fishaudio.org（国内可直连）→ api.fish.audio（旧域名，国内被墙）的顺序试，两条都不通时才需要在「Fish 代理」那一行填代理地址，再点一次试听。",
+  }),
+]);
+
+/**
+ * 分组表：`{ title, hint?, trailer?, fields }` 数组，**顺序即页面顺序**。
+ *
+ * 由字段描述符的 `group` 与上面的声明**派生** —— `fields` 按 `FIELD_NAMES` 的
+ * 声明序生成，所以「组内字段顺序」也只有一个来源。
+ *
+ * 未接线字段不进这里（它们由 `UNWIRED_FIELD_NAMES` 收进「暂未接线」）。
+ */
+export const SETTINGS_GROUPS = Object.freeze(
+  GROUP_DECLARATION.map((decl) =>
+    Object.freeze({
+      ...decl,
+      fields: Object.freeze(FIELD_NAMES.filter((n) => FIELDS[n].group === decl.title)),
+    }),
+  ),
+);
+
+/**
+ * 某个字段在哪一组里（`undefined` = 不在任何一组：未接线字段由页面收进
+ * 「暂未接线」）。
+ *
+ * @param {string} field - 字段名。
+ * @returns {string|undefined} 组标题。
+ */
+export function groupOfField(field) {
+  const spec = FIELDS[field];
+  return spec === undefined ? undefined : spec.group;
+}
+
+/**
+ * 枚举取值的中文文案：字段名 → `{ 值 → 标签 }`。
+ *
+ * 从各 enum 字段自己的 `enumLabels` 聚合（收自客户端那张 `ENUM_LABELS`）。
+ * 标签缺了不影响渲染 —— 页面回落到原样显示英文值。
+ */
+export const ENUM_LABELS = Object.freeze(
+  Object.fromEntries(
+    FIELD_NAMES.filter((n) => FIELDS[n].kind === "enum" && FIELDS[n].enumLabels !== undefined).map((n) => [
+      n,
+      FIELDS[n].enumLabels,
+    ]),
+  ),
+);
+
+/**
+ * 每个字段的行内说明：字段名 → 说明（收自客户端那张 `FIELD_HINTS`）。
+ *
+ * 与 `note` 分工：`hint` 管「它是什么」，`note` 管「为什么它现在不生效」
+ * （仅未接线字段）—— 两者不重叠，页面把前者渲染在标签下、后者渲染成小字。
+ */
+export const FIELD_HINTS = Object.freeze(
+  Object.fromEntries(FIELD_NAMES.filter((n) => FIELDS[n].hint !== undefined).map((n) => [n, FIELDS[n].hint])),
+);
 
 /**
  * 默认值表，可直接喂给 schemastery 的 `.default()`。
