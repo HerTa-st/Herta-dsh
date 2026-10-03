@@ -58,7 +58,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 
 /** 默认目标是工作区里的隔离实验 profile，绝不碰桌面应用真正在用的那个。 */
-const DEFAULT_PROFILE_DIR = resolve(root, "..", "herta-lab", ".dsh", "profiles", "herta-lab");
+const DEFAULT_PROFILE_DIR = resolve(
+  root,
+  "..",
+  "herta-lab",
+  ".dsh",
+  "profiles",
+  "herta-lab"
+);
 const profileDir = process.env.DSH_PROFILE_DIR ?? DEFAULT_PROFILE_DIR;
 /** 只镜像、不构建（见文件头 `--no-build`）。 */
 const NO_BUILD = process.argv.includes("--no-build");
@@ -72,7 +79,7 @@ const target = join(profileDir, "node_modules", "dsh-herta");
  * 于是部署一次就把目标里那 5 个文件当「陈旧文件」删了。两处一起收口：
  * 镜像集补齐成 `files` 的内容，陈旧判定只在自己的镜像集里找。
  */
-const MIRRORED_DIRS = ["lib", "assets", "preset", "locale"];
+const MIRRORED_DIRS = ["lib", "assets", "preset", "locale", "theme"];
 const MIRRORED_FILES = [
   "cordis.patch.yml",
   "package.json",
@@ -154,14 +161,25 @@ function copyTree(from, to) {
 if (NO_BUILD) {
   console.log("（--no-build：跳过构建，直接镜像仓库里的产物）");
 } else {
-  execFileSync(process.execPath, [join(here, "build.mjs")], { stdio: "inherit", cwd: root });
-  execFileSync(process.execPath, [join(here, "build-preset.mjs")], { stdio: "inherit", cwd: root });
-  execFileSync(process.execPath, [join(here, "build-herta-ui.mjs")], { stdio: "inherit", cwd: root });
+  execFileSync(process.execPath, [join(here, "build.mjs")], {
+    stdio: "inherit",
+    cwd: root,
+  });
+  execFileSync(process.execPath, [join(here, "build-preset.mjs")], {
+    stdio: "inherit",
+    cwd: root,
+  });
+  execFileSync(process.execPath, [join(here, "build-herta-ui.mjs")], {
+    stdio: "inherit",
+    cwd: root,
+  });
 }
 
 // 2) 镜像插件（原地覆盖，不删目录 —— 见文件头那段实测记录）
 if (!existsSync(profileDir)) {
-  throw new Error(`目标 profile 不存在：${profileDir}\n先跑一次 dsh --profile herta-lab --from-default-profile web --dump-config`);
+  throw new Error(
+    `目标 profile 不存在：${profileDir}\n先跑一次 dsh --profile herta-lab --from-default-profile web --dump-config`
+  );
 }
 mkdirSync(target, { recursive: true });
 for (const dir of MIRRORED_DIRS) {
@@ -176,9 +194,9 @@ for (const rel of MIRRORED_FILES) {
 if (failed.length > 0) {
   for (const f of failed) console.log(`  ✗ 没写进去：${f.rel} —— ${f.error}`);
   throw new Error(
-    `有 ${failed.length} 个文件没能写进 ${target}。\n`
-      + "最常见的原因：那个实例正在跑，而它加载了 assets/tts-runtime 下的原生件（常驻合成进程会）。\n"
-      + "已写入的部分不必回滚 —— 关掉实例后**重跑一次**即可（内容没变的文件会被跳过，不会重复动它们）。",
+    `有 ${failed.length} 个文件没能写进 ${target}。\n` +
+      "最常见的原因：那个实例正在跑，而它加载了 assets/tts-runtime 下的原生件（常驻合成进程会）。\n" +
+      "已写入的部分不必回滚 —— 关掉实例后**重跑一次**即可（内容没变的文件会被跳过，不会重复动它们）。"
   );
 }
 
@@ -186,7 +204,8 @@ if (failed.length > 0) {
 //     （上一版就是为了这件事才整棵删的；这里只删多出来的那些，不删目录）。
 const sourceFiles = new Set(MIRRORED_FILES);
 for (const dir of MIRRORED_DIRS) {
-  for (const rel of listFiles(join(root, dir))) sourceFiles.add(`${dir}/${rel}`);
+  for (const rel of listFiles(join(root, dir)))
+    sourceFiles.add(`${dir}/${rel}`);
 }
 // 只在**自己的镜像集里**找陈旧文件。遍历整个目标目录会把镜像集之外的东西
 // （`locale/`、`LICENSE` 这些 `files` 里点名的、以及别人放进去的文件）当陈旧删掉。
@@ -200,7 +219,9 @@ for (const rel of stale) {
   try {
     rmSync(join(target, rel), { force: true });
   } catch (err) {
-    console.log(`陈旧文件删不掉（多半正被运行中的实例占着）：${rel} —— ${String(err?.message ?? err)}`);
+    console.log(
+      `陈旧文件删不掉（多半正被运行中的实例占着）：${rel} —— ${String(err?.message ?? err)}`
+    );
   }
 }
 
@@ -214,14 +235,14 @@ for (const rel of sourceFiles) {
 }
 if (mismatched.length > 0) {
   throw new Error(
-    `镜像核验失败：${mismatched.length}/${sourceFiles.size} 个文件与构建产物不一致：\n  ${mismatched.slice(0, 10).join("\n  ")}`,
+    `镜像核验失败：${mismatched.length}/${sourceFiles.size} 个文件与构建产物不一致：\n  ${mismatched.slice(0, 10).join("\n  ")}`
   );
 }
 console.log(
-  `插件已部署到 ${target}（核验 ${sourceFiles.size} 个文件逐字节一致`
-    + `；本次真正写入 ${sourceFiles.size - unchanged.length} 个`
-    + `${unchanged.length === 0 ? "" : `，${unchanged.length} 个内容未变已跳过`}`
-    + `${stale.length === 0 ? "" : `，清掉 ${stale.length} 个陈旧文件`}）`,
+  `插件已部署到 ${target}（核验 ${sourceFiles.size} 个文件逐字节一致` +
+    `；本次真正写入 ${sourceFiles.size - unchanged.length} 个` +
+    `${unchanged.length === 0 ? "" : `，${unchanged.length} 个内容未变已跳过`}` +
+    `${stale.length === 0 ? "" : `，清掉 ${stale.length} 个陈旧文件`}）`
 );
 
 // 3) 轻量核验：preset 行确实出现在合成结果里。
@@ -233,4 +254,6 @@ const lst = lstatSync(target);
 if (lst.isSymbolicLink() || !lst.isDirectory()) {
   throw new Error(`目标不是普通目录（可能是链接/junction）：${target}`);
 }
-console.log("（preset 随包生效，无需往 $DSH_HOME 拷贝；改了 client 半侧或 preset 后需要重启 dsh web）");
+console.log(
+  "（preset 随包生效，无需往 $DSH_HOME 拷贝；改了 client 半侧或 preset 后需要重启 dsh web）"
+);
