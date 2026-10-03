@@ -104,8 +104,12 @@ for (const d of subdirs) {
 // （`lib/client.js.bak-unwired-groups`），而 `package.json` 的 `files` 收了整个
 // `lib/` —— `.gitignore` 挡得住 git，挡不住 npm：那个 511 KB 的备份进了 tarball。
 // 这里把「发布目录里没有 .bak*」钉成断言，免得下次又靠人记得。
+//
+// `theme` 是 0.1.7 起新收进 `files` 的那一项（自带主题随包分发）：它一次带进 4 张
+// PNG 与 4 份开场 JSON，一旦有备份落进去，tarball 会白胖好几 MB —— 和上面同一个病灶，
+// 所以跟着进这份名单。
 console.log("\n=== 发布目录里不许有补丁脚本的备份（.bak*）===");
-const PUBLISHED = ["lib", "assets", "preset", "locale"];
+const PUBLISHED = ["lib", "assets", "preset", "locale", "theme"];
 const backups = [];
 for (const dir of PUBLISHED) {
   const base = join(root, dir);
