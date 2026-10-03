@@ -26,3 +26,11 @@ src/client/index.tsx
 src/host/*.js
 src/host/*.cjs
 scripts/test-*.mjs
+
+# ## 3. 手写文档：表格是手工对齐的，重排只产生补白噪声
+#
+# `docs/*.md` 里全是中文长单元格的表格（`docs/设置搬迁.md` 实测重排 46 行、全是
+# 表格补白）。prettier 不改内容、只把每张表重写成对齐补白，diff 噪声大而可读性
+# 更差。已在 pre-commit 之前就格式化过的根文档（AGENTS/README/RELEASING）不受
+# 影响 —— 它们本来就是 clean 的。
+docs/

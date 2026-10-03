@@ -1,0 +1,3 @@
+# 设置字段的展示元数据住在字段描述符里，不拆回客户端
+
+一个设置字段的「怎么校验」与「怎么展示」原先分居五处 —— `settings-schema.js` 的 `FIELDS`、`settings-groups.js` 的组数组、客户端 `index.tsx` 的 `ENUM_LABELS` / `FIELD_HINTS` / `ENGINE_*` 四张表 —— 加一个字段要同时改这几处，漏任何一张就是渲染事故，两次都真发生过（2026-09-27 字段漏进组，整个「语音」组一行不渲染；2026-10-01 摘出分组时两边名单不同步，渲染两遍）。决定：`group` / `hint` / `enumLabels` / `widget` 与引擎行的逐档文案（`engine` 子对象）全部写进 `FIELDS[name]` 描述符，`SETTINGS_GROUPS` / `ENUM_LABELS` / `FIELD_HINTS` 从它派生，`settings-groups.js` 删除 —— **改一个字段只动一处**。这条决定反直觉的地方值得写明：展示文案因此住在一个**宿主侧的纯数据模块**里（客户端由 esbuild 内联同一份），而 `settings-groups.js` 的文件头当初恰恰为「展示表该独立、客户端 import 它」辩护过。不要因为「展示属于客户端」而把这几张表拆回去 —— 拆开正是那两起事故的成因；单测钉的是「单源自洽」（每个活字段都有组、枚举标签与取值域对齐、声明的 widget/trailer 客户端都认得），而不是「两张名单对账」。
