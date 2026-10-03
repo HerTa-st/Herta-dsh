@@ -163,21 +163,24 @@ export function ensureStyle() {
     // （fill / nav-item-hover / nav-item-active / active-accent），侧栏的底与悬停都归它们管。
     // 我上一版用类名硬压是错的解法 ✗（悬停会跳成不透明，正因为它另有出处）。
     //
-    // ⚠️ fill 保持半透明（那是主题想要的"面板浮在壁纸上"），但**下面必须垫一层不透明的同色底**：
-    // 半透明底色本身挡不住壁纸 —— 壁纸的图案会从整栏（以及行、字）里透出来，看起来像重影。
-    // 在那一行下面垫 `#261f2e`（正好是 `rgba(38,31,46,·)` 的不透明形式）即可：
-    // 令牌的透明度对着不透明底算，结果就是纯色；行与字的悬停态都在这层之上，不受影响。
+    // ⚠️ 两处坑，都来自"半透明自乘"：
+    //
+    //   1. fill **必须不透明**。这一族令牌在行、字、悬停/选中高光上都直接生效，而半透明是自乘的 ——
+    //      侧栏底一层半透明、高光再一层半透明，叠起来壁纸就明显渗进来，看着像高光/文字重影了一遍。
+    //      「垫一层不透明底」只救得了侧栏底色那一处，救不了行与高光（它们各自还带一层）。`#261f2e`
+    //      就是原先 `rgba(38,31,46,0.64)` 的不透明形式：颜色不变，只是不再透光。
+    //   2. 别再用「给所有后代加悬停底色」那种通配兜底（旧版那行已删）。它把底色加到**每一个**后代上，
+    //      鼠标停在选中行里时就与 `nav-item-active` 叠成两层、再乘上侧栏底那层 —— 正是"高光叠了两层"。
+    //      悬停/选中本来就归 `--dsw-specific-sidebar-nav-item-*` 这三个令牌管，够用。
     "body {" +
-      " --dsw-specific-sidebar-fill: rgba(38,31,46,0.64) !important;" +
+      " --dsw-specific-sidebar-fill: #261f2e !important;" +
       " --dsw-specific-sidebar-nav-item-hover: rgba(155,138,224,0.10) !important;" +
       " --dsw-specific-sidebar-nav-item-active: rgba(155,138,224,0.16) !important;" +
       " --dsw-specific-sidebar-nav-item-active-accent: #9b8ae0 !important; }",
-    // 那层不透明底。类名带哈希前缀，用后缀匹配，免得版本一变就失效。
+    // 兜底：万一那栏没吃令牌（探针只量到"计算值不透明"，量不出它从哪儿来），类名这层仍按
+    // **同一个不透明值**压住。类名带哈希前缀，用后缀匹配，免得版本一变就失效。
     `[class*="_sidebarCol"], [class*="_quietBars"] { background-color: #261f2e !important; }`,
-    // 悬停：令牌 + 一点兜底，别跳成不透明。**不去改它的 transition** ✗ ——
-    // 参照物根本不碰过渡，因为它的悬停本来就是半透明的，淡入淡出无所谓。
-    `[class*="_sidebarCol"] *:hover, [class*="_quietBars"] *:hover {` +
-      " background-color: rgba(155,138,224,0.10) !important; }",
+    // **不要**在这里给侧栏后代加悬停底色 ✗ —— 见上面第 2 条。
     // Windows 原生命中栏那条支路上，外壳的布局缺陷：收起按钮是
     // `[data-windows-titlebar] ._xxx_toggle{ position:fixed; left:12px }`（28px 见方，占 12→40），
     // 而同一行的品牌按钮是 `flex:1`、那一行 Windows 下 `padding:0` —— 两块从同一个 x 起，
