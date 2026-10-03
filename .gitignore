@@ -22,10 +22,9 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
-# `scripts/reapply-surface-fix.mjs` 改产物前会就近留一份，属于本地退路，不进仓库。
+# 构建/测试的本地备份残留（生成它们的 reapply-*.mjs 已于 2026-10-03 删除，
+# 这几行只防旧备份留在本地混进提交；见 ADR-0003：产物不补丁）。
 *.bak-surface-fix
-# 同理：`reapply-fish-proxy-field.mjs` / `reapply-ux-texts.mjs` / `reapply-fish-note.mjs`
-# / `reapply-unwired-groups.mjs` 的备份。
 *.bak-fish-proxy
 *.bak-ux-texts
 *.bak-fish-note

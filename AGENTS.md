@@ -14,9 +14,11 @@
    照链跑即可 —— 有的测试**要求不带** hook（`test-schema-optional` 验的是「没有
    schemastery 时的兜底」）。
 
-> **真源是 `src/`，产物由构建生成。** 历史坑：`scripts/reapply-*.mjs` 那批「只改产物、
-> 源码没跟上」的手改造成过双向漂移 —— 直接重建会静默回退 8 处已生效的界面文案
-> （见提交 `f65dea8`）。要改行为，改 `src/` 再重建。
+> **真源是 `src/`，产物只经 `npm run build` 生成、不可手工修补（ADR-0003）。**
+> 历史坑：当年那批 `scripts/reapply-*.mjs`「只改产物、源码没跟上」的手改造成过双向漂移
+> —— 直接重建会静默回退 8 处已生效的界面文案（见提交 `f65dea8`）。2026-10-03 起
+> esbuild 固定 0.25.12、pre-commit 强制「build 后 `lib/` 无 diff」，那批脚本已整体删除。
+> 要改行为，改 `src/` 再重建。
 
 ## 指针（按你手上是什么活去取）
 
@@ -39,11 +41,11 @@
 
 ## 本机环境（跑测试与构建要的）
 
-| 项 | 值 |
-|---|---|
-| DSH 解包运行时（测试借 `@deepseek-ai/*`） | `E:\deepseek工作区\HerTa\dsh-017\node_modules`，或 `$env:DSH_MODULES` |
-| Herta 源码（`test-narrative` / `test-herta-settings` 要读） | `E:\deepseek工作区\HerTa\Herta-src`，或 `$env:HERTA_SRC` |
-| esbuild（构建用） | 上面那份 Herta 源码的 pnpm store 里 |
+| 项                                                          | 值                                                                    |
+| ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| DSH 解包运行时（测试借 `@deepseek-ai/*`）                   | `E:\deepseek工作区\HerTa\dsh-017\node_modules`，或 `$env:DSH_MODULES` |
+| Herta 源码（`test-narrative` / `test-herta-settings` 要读） | `E:\deepseek工作区\HerTa\Herta-src`，或 `$env:HERTA_SRC`              |
+| esbuild（构建用）                                           | 上面那份 Herta 源码的 pnpm store 里                                   |
 
 桌面应用 profile、`deploy.mjs` 更新本地安装、宿主版本事实源等**发版相关**的环境事实，
 集中在 [`RELEASING.md`](RELEASING.md) 的「0. 环境事实」一节。

@@ -12,19 +12,19 @@
 
 ## 0. 环境事实（先读，别猜）
 
-| 项 | 值 |
-|---|---|
-| 仓库 | `E:\deepseek工作区\HerTa\dsh-herta`（远端 `HerTa-st/Herta-dsh`） |
-| 推送通道 | SSH（`ssh://git@ssh.github.com:443/…`）；main 有「必须走 PR」保护规则，但 `enforce_admins=false` → 管理员**可绕过**（推送时会出现 bypass 提示，属正常） |
-| npm 身份 | `yunmengyuan`，`registry.npmjs.org`，2FA = **auth-and-writes**（发布必须带 OTP） |
-| `gh` | 已登录 `YUNmengyuan`（scopes 含 `repo`） |
-| 桌面应用 profile | `C:\Users\梦源\.dsh\profiles\desktop`，里面是 **`file:` 安装**（不是 npm 安装） |
-| 本地更新插件 | `$env:DSH_PROFILE_DIR='C:\Users\梦源\.dsh\profiles\desktop'; node scripts/deploy.mjs`（镜像 lib/assets/preset/locale + 文档；逐字节核验；**不碰** profile 的 package.json） |
-| 宿主版本事实源 | `E:\deepseek Desktop\resources\runtime\primary-runtime\runtime.json` 的 `desktopVersion` |
-| 构建依赖 | esbuild 来自 `E:\deepseek工作区\HerTa\Herta-src\node_modules\.pnpm\esbuild@0.25.12`；preset 底本取仓库自带 `scripts/baselines/standard.dsh-*.patch.yml`（取版本最新） |
-| 测试 | **以 `package.json` 的 `test` 链为准**（当前 24 组 + `npm run test:minimax`）；预检按它逐条跑，并**沿用每条自己写的 `--import` 标记** —— 有几个测试**必须不带** hook（`test-schema-optional` 验的就是「没有 schemastery 时的兜底」，挂了 hook 等于把真库递进去） |
-| 上游目录 | 条目 `Herta-dsh`（`dsh-herta`）已收录；目录包 `dsh-plugin-catalog` **每天 UTC 02:23（北京 10:23）**重建 |
-| 发布文档惯例 | 工作区根：`Herta-DSH-vX.Y.Z-Release说明.md` + `Herta-DSH-vX.Y.Z-公告.md`（模板在 `docs/templates/`） |
+| 项               | 值                                                                                                                                                                                                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 仓库             | `E:\deepseek工作区\HerTa\dsh-herta`（远端 `HerTa-st/Herta-dsh`）                                                                                                                                                                                                 |
+| 推送通道         | SSH（`ssh://git@ssh.github.com:443/…`）；main 有「必须走 PR」保护规则，但 `enforce_admins=false` → 管理员**可绕过**（推送时会出现 bypass 提示，属正常）                                                                                                          |
+| npm 身份         | `yunmengyuan`，`registry.npmjs.org`，2FA = **auth-and-writes**（发布必须带 OTP）                                                                                                                                                                                 |
+| `gh`             | 已登录 `YUNmengyuan`（scopes 含 `repo`）                                                                                                                                                                                                                         |
+| 桌面应用 profile | `C:\Users\梦源\.dsh\profiles\desktop`，里面是 **`file:` 安装**（不是 npm 安装）                                                                                                                                                                                  |
+| 本地更新插件     | `$env:DSH_PROFILE_DIR='C:\Users\梦源\.dsh\profiles\desktop'; node scripts/deploy.mjs`（镜像 lib/assets/preset/locale + 文档；逐字节核验；**不碰** profile 的 package.json）                                                                                      |
+| 宿主版本事实源   | `E:\deepseek Desktop\resources\runtime\primary-runtime\runtime.json` 的 `desktopVersion`                                                                                                                                                                         |
+| 构建依赖         | esbuild **固定 0.25.12**（ADR-0003 可复现构建），来自 `E:\deepseek工作区\HerTa\Herta-src\node_modules\.pnpm\esbuild@0.25.12`，双脚本找不到该版本即报错；preset 底本取仓库自带 `scripts/baselines/standard.dsh-*.patch.yml`（取版本最新）                         |
+| 测试             | **以 `package.json` 的 `test` 链为准**（当前 24 组 + `npm run test:minimax`）；预检按它逐条跑，并**沿用每条自己写的 `--import` 标记** —— 有几个测试**必须不带** hook（`test-schema-optional` 验的就是「没有 schemastery 时的兜底」，挂了 hook 等于把真库递进去） |
+| 上游目录         | 条目 `Herta-dsh`（`dsh-herta`）已收录；目录包 `dsh-plugin-catalog` **每天 UTC 02:23（北京 10:23）**重建                                                                                                                                                          |
+| 发布文档惯例     | 工作区根：`Herta-DSH-vX.Y.Z-Release说明.md` + `Herta-DSH-vX.Y.Z-公告.md`（模板在 `docs/templates/`）                                                                                                                                                             |
 
 ---
 
@@ -74,9 +74,9 @@ node scripts/preflight-release.mjs
 **失败**：退出码 1，末尾会列出阻塞项 —— 逐条修掉再跑，**不要跳过**。
 
 > 预检会真的跑一遍构建。构建后 `git diff` 必须为空：产物与源码不同步时它就会红。
-> 若红了：**先判断哪边是真源**（历史上出现过 `reapply-*.mjs` 只改产物、源码没跟上的
-> 双向漂移 —— 见 `chore(client): 产物 re-sync` 那次提交），把该留在源码里的改动回填进
-> `src/`，再重建；**不要**为了让预检变绿而回退产物。
+> 若红了：**先判断哪边是真源** —— 真源永远是 `src/`（ADR-0003：产物只经 build 生成、
+> 不可手工修补；当年靠 `reapply-*.mjs` 补产物造成过双向漂移，那批脚本已删除），
+> 把该留在源码里的改动回填进 `src/`，再重建；**不要**为了让预检变绿而回退产物。
 
 ---
 
@@ -94,6 +94,7 @@ node scripts/preflight-release.mjs
 $env:DSH_HOME='<一个空目录>'
 dsh plugin --profile <临时名> add file:'<repo>\dsh-herta-<ver>.tgz'   # 先 npm pack 出来
 ```
+
 4. **保留旧行为至少一版**（deprecate 期），不要把用户一把掷进不兼容。
 
 ---
@@ -192,13 +193,13 @@ node scripts/preflight-release.mjs --verify-published X.Y.Z
 
 **回滚**（按 Q9 的约定）：
 
-| 情况 | 做法 |
-|---|---|
-| 已发布的版本有严重问题（72 小时内） | `npm unpublish dsh-herta@X.Y.Z`，修好后**递增 patch** 再发 |
-| 超出 72 小时 | `npm deprecate dsh-herta@X.Y.Z "原因"`，修好后递增 patch |
-| 任何时候 | **绝不重发同一个版本号**（会搞乱镜像、缓存与已装用户的 `latest` 语义） |
-| GitHub 侧 | `git revert <发布提交>` / 删掉 Release；tag 不轻易删（删了要提醒已装用户） |
-| 本地 profile | `dsh-herta\install-backups\` 里有安装前快照；或重跑 `deploy.mjs` 镜像旧版本 |
+| 情况                                | 做法                                                                        |
+| ----------------------------------- | --------------------------------------------------------------------------- |
+| 已发布的版本有严重问题（72 小时内） | `npm unpublish dsh-herta@X.Y.Z`，修好后**递增 patch** 再发                  |
+| 超出 72 小时                        | `npm deprecate dsh-herta@X.Y.Z "原因"`，修好后递增 patch                    |
+| 任何时候                            | **绝不重发同一个版本号**（会搞乱镜像、缓存与已装用户的 `latest` 语义）      |
+| GitHub 侧                           | `git revert <发布提交>` / 删掉 Release；tag 不轻易删（删了要提醒已装用户）  |
+| 本地 profile                        | `dsh-herta\install-backups\` 里有安装前快照；或重跑 `deploy.mjs` 镜像旧版本 |
 
 ---
 
@@ -215,18 +216,18 @@ node scripts/preflight-release.mjs --verify-published X.Y.Z
 
 ## 13. 已知坑（都真踩过）
 
-| # | 坑 | 现象 | 解法 |
-|---|---|---|---|
-| 1 | **产物与源码双向漂移** | 直接 `npm run build` 会静默回退 `reapply-*.mjs` 手改过的文案 | 改产物前先确认源码是真源；重建后逐条核验文案仍在（`test-fish-proxy` 已加一条守卫） |
-| 2 | **`.bak` 备份会被发出去** | `reapply-*.mjs` 的备份写在 `lib/` 里，而 `files` 收了整个 `lib/` | `test-artifact-sync.mjs` 现在守着「发布目录无 `.bak`」 |
-| 3 | **`deploy.mjs` 曾把包内文件当陈旧删掉** | 镜像集漏了 `locale`/`LICENSE`/`NOTICE.md`/`THIRD-PARTY.md`，陈旧清理又遍历整个目标目录 | 已修：镜像集与 `package.json` 的 `files` 对齐，陈旧清理限定在镜像集内 |
-| 4 | **`git status` 的行尾噪音** | 构建写 LF、检出 CRLF，`git status` 显示 M 但 `git diff` 为空 | 判干净看 `git diff`，不看 `git status` |
-| 5 | **测试清单会过期** | 早期 `npm test` 链漏了 4 个测试（现已补上）；将来新增测试若不接进链上，谁都不会跑到它 | 预检**照 `package.json` 的 `test` 链**跑（不写死清单）：新测试接进链上即自动覆盖；**别一律加 `--import`**，有的测试要的是「没有某个包在场」 |
-| 6 | **`dsh plugin add` 会换掉安装形态** | 本地是 `file:`，一旦 `add dsh-herta` 就变成 npm 安装，之后改代码不再生效 | 日常环境用 `deploy.mjs`；真实 npm 路径用临时 profile 验 |
-| 7 | **npm 认证链接被打码** | 普通输出里 `auth/cli/***`、`authId=***` | 用 `npm publish --json` 取未脱敏的 `authUrl`/`doneUrl` |
-| 8 | **非 TTY 发布不会自动重试** | 认证完原进程已退出 | 拿 `doneUrl` 的 token 重发，或让用户在自己终端发 |
-| 9 | **CI 想上还早** | 干净机器上 23 个测试可跑，但 `npm test` 会在 `test-narrative` 因缺 `Herta-src` 直接 ENOENT 断链 | 上 CI 前：给 `test-narrative` / `test-herta-settings` 加「目录不存在则跳过」，6 个 hook 测试补 DSH 运行时 + `DSH_MODULES` |
-| 10 | **tag 不等于 Release** | 只推 tag，Releases 页面仍显示上一个版本 | §9 必须建 Release（`--latest`） |
+| #   | 坑                                      | 现象                                                                                            | 解法                                                                                                                                        |
+| --- | --------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **产物与源码双向漂移**                  | 当年 `reapply-*.mjs` 只改产物、源码没跟上，`npm run build` 会静默回退手改的文案                 | 已根治（ADR-0003）：产物只经 build 生成，那批脚本已删；改动一律进 `src/` 再重建，pre-commit 的 build 后 `lib/` 无 diff 守着                 |
+| 2   | **`.bak` 备份会被发出去**               | 历史脚本的备份写在 `lib/` 里，而 `files` 收了整个 `lib/`                                        | `test-artifact-sync.mjs` 守着「发布目录无 `.bak`」（防的是任何写文件的脚本，不只当年的 reapply）                                            |
+| 3   | **`deploy.mjs` 曾把包内文件当陈旧删掉** | 镜像集漏了 `locale`/`LICENSE`/`NOTICE.md`/`THIRD-PARTY.md`，陈旧清理又遍历整个目标目录          | 已修：镜像集与 `package.json` 的 `files` 对齐，陈旧清理限定在镜像集内                                                                       |
+| 4   | **`git status` 的行尾噪音**             | 构建写 LF、检出 CRLF，`git status` 显示 M 但 `git diff` 为空                                    | 判干净看 `git diff`，不看 `git status`                                                                                                      |
+| 5   | **测试清单会过期**                      | 早期 `npm test` 链漏了 4 个测试（现已补上）；将来新增测试若不接进链上，谁都不会跑到它           | 预检**照 `package.json` 的 `test` 链**跑（不写死清单）：新测试接进链上即自动覆盖；**别一律加 `--import`**，有的测试要的是「没有某个包在场」 |
+| 6   | **`dsh plugin add` 会换掉安装形态**     | 本地是 `file:`，一旦 `add dsh-herta` 就变成 npm 安装，之后改代码不再生效                        | 日常环境用 `deploy.mjs`；真实 npm 路径用临时 profile 验                                                                                     |
+| 7   | **npm 认证链接被打码**                  | 普通输出里 `auth/cli/***`、`authId=***`                                                         | 用 `npm publish --json` 取未脱敏的 `authUrl`/`doneUrl`                                                                                      |
+| 8   | **非 TTY 发布不会自动重试**             | 认证完原进程已退出                                                                              | 拿 `doneUrl` 的 token 重发，或让用户在自己终端发                                                                                            |
+| 9   | **CI 想上还早**                         | 干净机器上 23 个测试可跑，但 `npm test` 会在 `test-narrative` 因缺 `Herta-src` 直接 ENOENT 断链 | 上 CI 前：给 `test-narrative` / `test-herta-settings` 加「目录不存在则跳过」，6 个 hook 测试补 DSH 运行时 + `DSH_MODULES`                   |
+| 10  | **tag 不等于 Release**                  | 只推 tag，Releases 页面仍显示上一个版本                                                         | §9 必须建 Release（`--latest`）                                                                                                             |
 
 ---
 
