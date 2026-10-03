@@ -175,6 +175,13 @@ export function ensureStyle() {
     // 参照物根本不碰过渡，因为它的悬停本来就是半透明的，淡入淡出无所谓。
     `[class*="_sidebarCol"] *:hover, [class*="_quietBars"] *:hover {` +
       " background-color: rgba(155,138,224,0.10) !important; }",
+    // Windows 原生命中栏那条支路上，外壳的布局缺陷：收起按钮是
+    // `[data-windows-titlebar] ._xxx_toggle{ position:fixed; left:12px }`（28px 见方，占 12→40），
+    // 而同一行的品牌按钮是 `flex:1`、那一行 Windows 下 `padding:0` —— 两块从同一个 x 起，
+    // 于是「收起侧边栏」的提示压在品牌字上。`gap:8px` 是 flex 间距，对 fixed 的子项不起作用。
+    // 给品牌行让出那个位置即可；收起态有更高特异性的规则（`._collapsed ._logoRow{padding:0}`）不受影响。
+    // 类名带哈希前缀，同样用后缀匹配。
+    `[data-windows-titlebar] [class*="_logoRow"] { padding-left: 40px !important; }`,
     `body { --dsw-alias-interactive-bg-hover-solid: rgba(155,138,224,0.12) !important; }`,
     "#root { background-color: transparent !important; }",
     // 壁纸层（z -2）与可读性遮罩（z -1）：**不能**铺在 body 自己的背景上 ✗
