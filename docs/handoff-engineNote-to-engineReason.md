@@ -139,8 +139,11 @@ export const VOICE_ENGINES = Object.freeze(["local", "minimax", "fish", "mimo"])
 
   （对外名字不变，`voice-settings-shared.js` 的消费方不用动 —— 尤其**别**把 641 行的
   字段表拖进客户端包，那正是 `voice-engines.js` 单独成文件的原因。）
-- **单独改 `settings-schema.js` 那一处是中性的**（实测两版 bundle 逐字节相同）；
-  造成差异的是 `voice-settings-shared.js`（客户端模块多出一个 import 节点）。
+- **两处都各自会改 bundle**（2026-10-03 逐个 A/B 实测：只改 `settings-schema.js` 那一处，
+  `lib/client.js` 也从 `c868206f…` 变成 `88f7ffb1…`；两处一起改则 496.4 → 496.5 KB）。
+  别指望"只动一个文件所以不用重建" ❌ —— 只要模块图变了，产物就变。
+  （**中性的**是另一件事：把同一文件里的字面量换成常量引用 —— 即本仓库已落地的
+  `values: VOICE_ENGINES` —— 那一次实测两版 bundle 逐字节相同。）
 - 验收：`npm run build` 之后 `git diff --exit-code -- lib` 为空（ADR-0003 的那条守卫）。
 - 做完之后，加一档引擎才真的**只动 `voice-engines.js` 一处**。
 
