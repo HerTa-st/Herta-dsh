@@ -82,22 +82,38 @@ npm test               # 全链（这台跑不了的两条这次能跑了）
 - 若走 PR：base `main`、标题照 `<type>(<scope>): <subject>`；
 - 这两项做完，交接的 ①~⑥ 就全清了（①②③④⑤⑥ 均已落地）。
 
-## 五、本机实测：别在缺工具链的机器上「自造」（2026-10-03 记录）
+## 五、工具链能不能自己凑出来？（2026-10-03 实测，结论已修正）
 
-有人在一台**没有 esbuild、也没有那份 `Herta-src`** 的机器上试过「自己装一个再重建」。
-结论：**死路**，别重趟。实测三条：
+先前的版本在这里写着「别自造，产物不可信」—— **那句是错的** ✗，已按实测改正：
 
-1. **esbuild 本身拿得到**：走 `http://127.0.0.1:7897` 代理 `pnpm add esbuild@0.25.12` 即可
-   （构建脚本只认这一条路径：`HERTA_SRC/node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js`，
-   见 `scripts/build.mjs:63-82`；平台二进制会随 `@esbuild/win32-x64` 一起装上）。
-2. **上游锚点对不上**：`ADR-0002` 记的 `c86d122` 是「源码通读」的锚点，**不是构建锚点** ——
-   把上游换到它之后，构建报 `X [ERROR] Could not resolve "@herta/core/text-sanitize"`。
-   构建用的确切上游版本，仓库里**没有记**（这是本清单之外、值得补的一条）。
-3. **即使跑通也不可信**：三次尝试、三次都把 `lib/minimax/*.js` 生成成**与提交不同的字节**
-   （原因与待做的改动无关）。拿这种产物提交 = 把无关漂移混进历史，正是 AGENTS
-   「产物只经构建生成（ADR-0003）」要防的事。
+**能凑出来，而且 host 侧逐字节可复现。** 缺的四样都是环境，不是代码：
 
-**结论**：第 3/4 笔后半与第 ⑤ 项，必须在**有那份确切 `Herta-src` 的机器**上做。
-本机若只是读代码、跑不依赖构建的测试，可以把 `HERTA_SRC` 指向一份只读的上游克隆
-（例如 `C:\herta-ai\tools\_herta-src`）；**但别用它生成产物**。
+1. **esbuild 0.25.12** —— 走 `http://127.0.0.1:7897` 代理 `pnpm add esbuild@0.25.12` 即可。
+   构建脚本只认这一条路径：`HERTA_SRC/node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js`
+   （`scripts/build.mjs:63-82`）；平台二进制随 `@esbuild/win32-x64` 一起装。
+2. **PATH 里要有 `node`** —— pnpm 的子进程按名字找 `node`，只给绝对路径调 `pnpm.cjs` 会报
+   `'node' is not recognized`。
+3. **上游要先自己构建**：在 `HERTA_SRC` 里 `pnpm install --ignore-scripts` + `pnpm build`（= `tsc -b`）。
+4. **`@herta/*` 的桥要自己搭** ✓ 这最隐蔽：上游的 workspace 包链接在各包自己的 `node_modules` 里，
+   而 esbuild 是从**本仓库**的文件往上找 `node_modules` —— 所以要在本仓库（或构建台）的
+   `node_modules/@herta/` 下给 9 个包建目录联接（指向 `HERTA_SRC/packages/*`）。搭上之后
+   `lib/client.js` 立刻构建成功。
+
+**判据必须用内容哈希，别看 `git status`** ✓ —— 构建写 LF、检出 CRLF，`git status` 会显示一批 `M`
+而内容其实一致（AGENTS.md 记过这个假阳性）。实测：
+
+```
+git hash-object -- lib/...   vs   git rev-parse HEAD:lib/...
+→ lib/ 里 54 个文件与提交内容全部相同 ✓
+```
+
+**还没做到的**：`lib/client.js` 的**逐字节**复现 ✗。它随上游版本变化（`c86d122` 504,383 字节 →
+`1de74a5` 508,214 → fork main 520,900，而目标是 **504,934**），二分已收到 `c86d122` 之后一两笔；
+而某个上游提交的说明指出「the voice payload is a **hash-pinned release asset** the workflow fetches」
+—— 语音素材是**从 release 单独取**的，不随仓库走。所以差的那部分很可能是**素材**，不是版本。
+
+**所以**：第 3/4 笔后半与第 ⑤ 项要改 `src/client/index.tsx` ✓ —— 本机**能构建** ✓，但要让产物与提交
+逐字节一致、好让 `build 后 lib/ 无 diff` 那条守卫通过 ✓，还得先拿到那批 hash 钉住的素材 ✓
+（或者在有完整 `Herta-src` + 素材的机器上做 ✓，那是更短的路 ✓）。
+
 
