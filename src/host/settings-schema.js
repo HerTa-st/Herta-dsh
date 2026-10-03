@@ -137,7 +137,8 @@ export const SETTINGS_NAMESPACE = "herta";
  *   · `synth-registry.js` 的回落表 —— 哪一档失败之后换哪一档（见 ADR-0005）。
  * 加一档：**只动这里** + 写一个 adapter 工厂，别再抄第二遍。
  */
-export const VOICE_ENGINES = Object.freeze(["local", "minimax", "fish", "mimo"]);
+import { VOICE_ENGINES } from "./voice-engines.js";
+export { VOICE_ENGINES };
 
 export const FIELDS = Object.freeze({
   /**
