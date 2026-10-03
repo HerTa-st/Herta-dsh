@@ -17,6 +17,9 @@
  */
 import type { SpeechUnit } from "./segment.js";
 import { segmentSpeechUnits } from "./segment.js";
+// 「谁会出声」的唯一声明在 `../voice-engines.js`（候选 #4：取值域只写一遍）——
+// 纯常量模块，没有 IO，不违反本文件「零 DSH 依赖、零裸包导入」那条。
+import { SPEAKING_ENGINES } from "../voice-engines.js";
 
 /** 每轮最多合成多少个字符（用户决策：800）。 */
 export const MAX_TURN_CHARS = 800;
@@ -39,8 +42,9 @@ export const MAX_TURN_CHARS = 800;
  * @returns 这个引擎是否会把音频推出来。
  */
 export function speaksFor(engine: string): boolean {
-  // [herta-fish-engine] Fish 也算会说话的引擎
-  return engine === "minimax" || engine === "local" || engine === "fish";
+  // [herta-fish-engine] Fish 也算会说话的引擎 —— 它已经在 SPEAKING_ENGINES 里。
+  // 这里不再硬写三档：加一档时只改 `../voice-engines.js` 那一行（候选 #4）。
+  return (SPEAKING_ENGINES as readonly string[]).includes(engine);
 }
 
 /** 一个单元合成出来的东西（宿主注入的 `synthUnit` 的返回形状）。 */
