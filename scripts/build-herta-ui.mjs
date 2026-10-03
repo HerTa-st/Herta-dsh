@@ -12,7 +12,13 @@
  *
  * 所以这里不套用 build.mjs 的外部依赖白名单，反而是「什么都不 external」。
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -21,21 +27,28 @@ const root = resolve(here, "..");
 const outDir = join(root, "lib", "herta-ui");
 const URL_ASSETS_DIR = join(outDir, "assets");
 
-const HERTA_SRC = process.env.HERTA_SRC ?? "E:\\deepseek工作区\\HerTa\\Herta-src";
+const HERTA_SRC =
+  process.env.HERTA_SRC ?? "E:\\deepseek工作区\\HerTa\\Herta-src";
 const HERTA_RENDERER = join(HERTA_SRC, "packages", "gui", "src", "renderer");
 /** 官网那套 shim 可以直接借用 —— 它们就是为「脱离 Electron 跑渲染层」写的。 */
 const WEBSITE_SRC = join(HERTA_SRC, "website", "src");
 
 function findEsbuild() {
-  const candidates = [
-    join(HERTA_SRC, "node_modules", ".pnpm", "esbuild@0.25.12", "node_modules", "esbuild"),
-    join(HERTA_SRC, "node_modules", ".pnpm", "esbuild@0.28.1", "node_modules", "esbuild"),
-  ];
-  for (const dir of candidates) {
-    const entry = join(dir, "lib", "main.js");
-    if (existsSync(entry)) return entry;
-  }
-  throw new Error("找不到 esbuild");
+  // 固定 0.25.12（ADR-0003：可复现构建），与 build.mjs 同一个版本 ——
+  // 两条构建链换 esbuild 版本会让产物字节漂移，被 pre-commit 的 diff 守卫拦下。
+  const dir = join(
+    HERTA_SRC,
+    "node_modules",
+    ".pnpm",
+    "esbuild@0.25.12",
+    "node_modules",
+    "esbuild"
+  );
+  const entry = join(dir, "lib", "main.js");
+  if (existsSync(entry)) return entry;
+  throw new Error(
+    `找不到 esbuild 0.25.12（可复现构建的固定版本）：\n  ${entry}`
+  );
 }
 
 function firstExistingFile(base) {
@@ -64,7 +77,8 @@ const guiAlias = {
     build.onResolve({ filter: /^@gui(\/|$)/ }, (args) => {
       const rest = args.path.replace(/^@gui\/?/, "");
       const found = firstExistingFile(join(HERTA_RENDERER, rest));
-      if (found === null) return { errors: [{ text: `@gui 解析失败：${args.path}` }] };
+      if (found === null)
+        return { errors: [{ text: `@gui 解析失败：${args.path}` }] };
       return { path: found };
     });
   },
@@ -79,7 +93,8 @@ const jsToTs = {
       if (args.importer === "") return null;
       const base = resolve(dirname(args.importer), args.path.slice(0, -3));
       for (const ext of [".ts", ".tsx"]) {
-        if (existsSync(base + ext) && statSync(base + ext).isFile()) return { path: base + ext };
+        if (existsSync(base + ext) && statSync(base + ext).isFile())
+          return { path: base + ext };
       }
       return null;
     });
@@ -134,7 +149,10 @@ const urlAssets = {
       mkdirSync(URL_ASSETS_DIR, { recursive: true });
       copyFileSync(args.path, join(URL_ASSETS_DIR, name));
       urlAssetNames.add(name);
-      return { contents: `export default ${JSON.stringify(`assets/${name}`)};`, loader: "js" };
+      return {
+        contents: `export default ${JSON.stringify(`assets/${name}`)};`,
+        loader: "js",
+      };
     });
   },
 };
@@ -187,13 +205,16 @@ export function pickOpeningSegment(loaders = undefined, rng = Math.random) {
 /** 可用的开场段文件名（构建期扫出来，供上面的 fetch 版使用）。 */
 const OPENING_DIR = join(HERTA_RENDERER, "assets", "openings");
 const OPENING_SEGMENTS = existsSync(OPENING_DIR)
-  ? readdirSync(OPENING_DIR).filter((n) => n.endsWith(".json")).sort()
+  ? readdirSync(OPENING_DIR)
+      .filter((n) => n.endsWith(".json"))
+      .sort()
   : [];
 
 const BANNER = undefined;
 
 async function main() {
-  if (!existsSync(HERTA_RENDERER)) throw new Error(`找不到 Herta 渲染层：${HERTA_RENDERER}`);
+  if (!existsSync(HERTA_RENDERER))
+    throw new Error(`找不到 Herta 渲染层：${HERTA_RENDERER}`);
   if (!existsSync(ENTRY)) throw new Error(`找不到入口：${ENTRY}`);
 
   const esbuild = await import(pathToFileURL(findEsbuild()).href);
@@ -208,7 +229,10 @@ async function main() {
     target: "es2022",
     jsx: "automatic",
     // React 只装在 Herta 的 gui 包下，本包没有 node_modules —— 用 nodePaths 补上。
-    nodePaths: [join(HERTA_SRC, "packages", "gui", "node_modules"), join(HERTA_SRC, "node_modules")],
+    nodePaths: [
+      join(HERTA_SRC, "packages", "gui", "node_modules"),
+      join(HERTA_SRC, "node_modules"),
+    ],
     // 渲染层里有 `import.meta.env.DEV`（App.tsx）。iife 格式下 import.meta 是空的，
     // 不替换就会变成 `undefined.DEV` 这种运行时错误，所以必须显式替换掉。
     define: {
@@ -261,10 +285,15 @@ async function main() {
     copyFileSync(join(OPENING_DIR, name), join(openingOut, name));
     copied += statSync(join(openingOut, name)).size;
   }
-  console.log(`lib/herta-ui/openings/     ${OPENING_SEGMENTS.length} 份 / ${(copied / 1024 / 1024).toFixed(1)} MB（按需 fetch）`);
+  console.log(
+    `lib/herta-ui/openings/     ${OPENING_SEGMENTS.length} 份 / ${(copied / 1024 / 1024).toFixed(1)} MB（按需 fetch）`
+  );
 
   // 页面本身。
-  copyFileSync(join(root, "src", "herta-ui", "index.html"), join(outDir, "index.html"));
+  copyFileSync(
+    join(root, "src", "herta-ui", "index.html"),
+    join(outDir, "index.html")
+  );
   console.log("lib/herta-ui/index.html");
 }
 

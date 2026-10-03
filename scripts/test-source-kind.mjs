@@ -20,10 +20,21 @@
  * （GUI 渲染成「本轮运行失败」），而被拒的事件根本没进日志 —— 事后翻会话
  * 文件是干净的，只有界面上的红字。实测踩过一次（v0.1.3）。
  *
- * 所以这里把不变量钉死：host 半侧**每一处** source 字面量都必须是
- * 非空、非 "plugin" 的 kind。
+ * 所以这里把不变量钉死：host 半侧的 source kind **只有一处定义**
+ * （`src/host/plugin-source.js` 的 `PLUGIN_SOURCE`），其余模块一律 import 它 ——
+ * 而且它必须是非空、非 "plugin" 的 kind。
  *
- * ## 为什么是源码级检查而不是跑一遍运行时
+ * ## 2026-10-03：从「数字面量个数」改成「断言 interface」
+ *
+ * 原先这里维护一张 `EXPECTED = { narrative-layer.js: 4, supervisor-llm.js: 1,
+ * dream-distill-llm.js: 1 }` 的期望表，数每个文件里有几个 `source: {` 字面量 ——
+ * 于是**任何一次正常重构（把字面量提成常量、调整注入路径）都会让测试变红**，
+ * 而它守的东西（kind 的形状）其实没变。
+ *
+ * 现在改成：import 那个常量、断言它的形状（行为层），再加一条「别人不许自写
+ * 字面量」（结构层）。加一个 source 注入点、或把字面量提成常量，都不再误报。
+ *
+ * ## 为什么仍是源码级检查而不是跑一遍运行时
  *
  * 校验函数在 `@deepseek-ai/dsh-session-format-v3-to-v4` 里，那是宿主的运行时
  * 模块（打包在 app.asar 内），测试环境拿不到 —— 硬造一个替身只会测到替身。
@@ -34,6 +45,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PLUGIN_SOURCE } from "../src/host/plugin-source.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const hostDir = resolve(here, "..", "src", "host");
@@ -106,7 +118,8 @@ function sliceObject(text, open) {
  */
 function sourceLiterals(text) {
   const found = [];
-  const re = /\bsource\s*:\s*\{|\bPLUGIN_SOURCE\s*=\s*\{/g;
+  // `Object.freeze({...})` 也认 —— 定义处是冻结的常量（见 plugin-source.js）。
+  const re = /\bsource\s*:\s*\{|\bPLUGIN_SOURCE\s*=\s*(?:Object\.freeze\()?\s*\{/g;
   let m;
   while ((m = re.exec(text)) !== null) {
     const open = text.indexOf("{", m.index);
@@ -118,47 +131,54 @@ function sourceLiterals(text) {
   return found;
 }
 
-// 需要被检查的模块：所有真会构造消息的 host 模块。
-// `narrative-layer.js` 的四处是**必须**存在的（复核否决 + 分拍 + 空轮提醒 + 它的
-// 退回注入各一条）；少了说明它被改成了别处构造，应当同步更新本测试。
-const EXPECTED = new Map([
-  ["narrative-layer.js", 4],
-  ["supervisor-llm.js", 1],
-  ["dream-distill-llm.js", 1],
-]);
+/** 常量本体住这里（唯一定义处）。 */
+const DEFINITION_FILE = "plugin-source.js";
 
-console.log("=== 会话 v4 source kind：host 半侧字面量 ===");
+console.log("=== 常量本身：形状必须合法（v4 只认生产者自有 kind）===");
+{
+  const kind = PLUGIN_SOURCE?.kind;
+  check(typeof kind === "string" && kind.length > 0, `PLUGIN_SOURCE.kind 非空（实得 ${JSON.stringify(kind)}）`);
+  check(kind !== "plugin", "kind 不是裸 \"plugin\"（v4 已退役这个值）");
+  check(
+    !Object.prototype.hasOwnProperty.call(PLUGIN_SOURCE, "plugin"),
+    "没有 `plugin` 字段（v4 退役了这个字段名，来源身份由 kind 承担）",
+  );
+  check(Object.isFrozen(PLUGIN_SOURCE), "常量是冻结的（它会被塞进会话事件）");
+}
+
+console.log("\n=== 结构：定义只有一处，其余模块一律 import ===");
 
 const hostFiles = readdirSync(hostDir).filter((name) => name.endsWith(".js"));
-const seen = new Map();
+let definitionSites = 0;
 
 for (const name of hostFiles) {
   const text = readFileSync(join(hostDir, name), "utf8");
   const literals = sourceLiterals(text);
-  if (literals.length === 0) continue;
-  seen.set(name, literals.length);
-  for (const { line, literal } of literals) {
-    // 只取 kind 字段——其余字段（plugin / form / summary）在 v4 下已不存在。
-    const kindMatch = literal.match(/\bkind\s*:\s*(?:"([^"]*)"|'([^']*)')/);
-    const kind = kindMatch === null ? null : (kindMatch[1] ?? kindMatch[2]);
-    // v4 退役了 `plugin` 这个**字段名**（来源身份改由 kind 承担），所以只允许
-    // 出现 kind 一个字段。注意别把 kind 的**值**（`plugin:dsh-herta` 前缀，
-    // 正是合法形状）误判成字段名：要求 `plugin` 后面紧跟冒号，且前面是
-    // `{`、`,` 或空白，不能是引号内部的字符。
-    const hasPluginField = /(?:^|[{,\s])plugin\s*:/.test(literal);
-    const ok = kind !== null && kind.length > 0 && kind !== "plugin" && !hasPluginField;
-    check(
-      ok,
-      `${name}:${line}  ${literal.replace(/\s+/g, " ")}`,
-    );
+  if (name === DEFINITION_FILE) {
+    definitionSites = literals.length;
+    for (const { line, literal } of literals) {
+      const kindMatch = literal.match(/\bkind\s*:\s*(?:"([^"]*)"|'([^']*)')/);
+      const kind = kindMatch === null ? null : (kindMatch[1] ?? kindMatch[2]);
+      check(
+        kind !== null && kind.length > 0 && kind !== "plugin",
+        `${name}:${line} 定义处的 kind 合法：${literal.replace(/\s+/g, " ")}`,
+      );
+    }
+    continue;
   }
+  // 其它模块**不许自己声明 kind** —— 要么 `source: PLUGIN_SOURCE`，要么
+  // `source: { ...PLUGIN_SOURCE, form, summary }`（展开常量、只加自己的字段）。
+  // 所以判据是「字面量里有没有 kind 键」，不是「有没有出现 `source: {`」：
+  // 展开常量那种写法也要放行。
+  const inlineKind = literals.filter(({ literal }) => /\bkind\s*:/.test(literal));
+  check(
+    inlineKind.length === 0,
+    `${name}：没有自写的 kind 字面量（改从 plugin-source.js import）` +
+      (inlineKind.length === 0 ? "" : ` —— 发现 ${inlineKind.length} 处，如 :${inlineKind[0].line}`),
+  );
 }
 
-console.log("=== 覆盖面：每个该有 source 的模块都在 ===");
-for (const [name, expected] of EXPECTED) {
-  const actual = seen.get(name) ?? 0;
-  check(actual === expected, `${name} 有 ${actual} 处 source 字面量（期望 ${expected}）`);
-}
+check(definitionSites === 1, `${DEFINITION_FILE} 里只有 1 处定义（实得 ${definitionSites}）`);
 
 console.log("");
 console.log(`${passed} passed, ${failed} failed`);

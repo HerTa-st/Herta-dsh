@@ -16,9 +16,11 @@
  * 这条测试就是那道 CI：把两个目录对一遍，任何不一致都当场红。
  *
  * 用法：node scripts/test-artifact-sync.mjs
- *   `lib/client.js` 不在检查范围（它是 esbuild 打的包，源码在 `src/client/**`，
- *   磁盘上这两者本来就不同形 —— 它的一致性由 `scripts/reapply-*.mjs` 那类脚本
- *   与 `test-fish-proxy.mjs` 里的定点断言各自守着）。
+ *   `lib/client.js` 不在本测试的检查范围（它是 esbuild 打的包，源码在 `src/client/**`，
+ *   磁盘上这两者本来就不同形）。它的一致性由 `.husky/pre-commit` 的
+ *   `npm run build && git diff --exit-code -- lib` 守住 —— 「产物只经 build 生成、
+ *   不可手工修补」是 2026-10-03 的决定（ADR-0003），原先兜底的 `reapply-*.mjs`
+ *   已整体删除。
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -43,7 +45,9 @@ const ok = (cond, label, detail = "") => {
 /** 平铺拷进 `lib/` 的那些（.js / .cjs，见 build.mjs）。 */
 const flat = (dir) =>
   readdirSync(dir, { withFileTypes: true })
-    .filter((e) => e.isFile() && (e.name.endsWith(".js") || e.name.endsWith(".cjs")))
+    .filter(
+      (e) => e.isFile() && (e.name.endsWith(".js") || e.name.endsWith(".cjs"))
+    )
     .map((e) => e.name);
 
 console.log("=== src/host 的每一个文件都要在 lib 里，且逐字节相同 ===");
@@ -64,21 +68,27 @@ for (const name of srcFiles) {
     ok(
       false,
       `${name}：src 与 lib 不一致`,
-      `${ba.length} B vs ${bb.length} B —— 改了源码但没同步产物（或反之）`,
+      `${ba.length} B vs ${bb.length} B —— 改了源码但没同步产物（或反之）`
     );
   }
 }
-ok(same === srcFiles.length, `全部 ${srcFiles.length} 个文件一致`, `实际一致 ${same} 个`);
+ok(
+  same === srcFiles.length,
+  `全部 ${srcFiles.length} 个文件一致`,
+  `实际一致 ${same} 个`
+);
 
 console.log("\n=== 反向：lib 里不该有 src/host 没有的『平铺文件』 ===");
 // `client.js` 是 esbuild 打的包（源码在 `src/client/**`），本来就不来自 `src/host` ——
 // 文件头那段已经写明它不在检查范围，反查这里也必须显式排除，
 // 否则每次都会误报「多了：client.js」。
-const libOnly = flat(LIB).filter((n) => !srcFiles.includes(n) && n !== "client.js");
+const libOnly = flat(LIB).filter(
+  (n) => !srcFiles.includes(n) && n !== "client.js"
+);
 ok(
   libOnly.length === 0,
   "没有来路不明的平铺文件",
-  libOnly.length === 0 ? "" : `多了：${libOnly.join(", ")}`,
+  libOnly.length === 0 ? "" : `多了：${libOnly.join(", ")}`
 );
 
 console.log("\n=== 子目录也要在（如 lib/minimax/）===");
@@ -112,11 +122,13 @@ for (const dir of PUBLISHED) {
 ok(
   backups.length === 0,
   "没有 .bak 备份混进发布目录",
-  backups.length === 0 ? "" : `发现：${backups.join(", ")}（删掉它，或让脚本把备份写到仓库外）`,
+  backups.length === 0
+    ? ""
+    : `发现：${backups.join(", ")}（删掉它，或让脚本把备份写到仓库外）`
 );
 
 console.log(`\n=== 结果：${pass} 通过 / ${fail} 失败 ===`);
 console.log(
-  "（修法：`node scripts/build.mjs`；没有 esbuild 的手工场合，把 src/host 下改过的文件原样覆盖到 lib/。）",
+  "（修法：`npm run build` 重建。产物只经构建生成、不可手工修补 —— ADR-0003。）"
 );
 process.exit(fail === 0 ? 0 : 1);

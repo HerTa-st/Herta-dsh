@@ -23,7 +23,6 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
-
 let pass = 0;
 let fail = 0;
 const ok = (cond, label, detail = "") => {
@@ -39,35 +38,50 @@ const ok = (cond, label, detail = "") => {
 console.log("=== 宿主：接住合成器传出来的那个数 ===");
 for (const p of ["src/host/minimax-voice.js", "lib/minimax-voice.js"]) {
   const s = read(p);
-  ok(/onUsed:\s*\(billedChars\)\s*=>\s*voice\.stampUsed\(billedChars\)/.test(s), `${p}：把 billedChars 传进 stampUsed`);
-  ok(!/onUsed:\s*\(\)\s*=>\s*voice\.stampUsed\(\)/.test(s), `${p}：没有「收了参数没人用」的老写法`);
+  ok(
+    /onUsed:\s*\(billedChars\)\s*=>\s*voice\.stampUsed\(billedChars\)/.test(s),
+    `${p}：把 billedChars 传进 stampUsed`
+  );
+  ok(
+    !/onUsed:\s*\(\)\s*=>\s*voice\.stampUsed\(\)/.test(s),
+    `${p}：没有「收了参数没人用」的老写法`
+  );
 }
 
 console.log("\n=== voice：累计 + 带出（源与产物都要有）===");
 for (const p of ["src/host/minimax/voice.ts", "lib/minimax/voice.js"]) {
   const s = read(p);
   ok(/let billedCharsTotal = 0/.test(s), `${p}：声明了累计量`);
-  ok(/stampUsed\(billedChars = 0\)/.test(s), `${p}：stampUsed 有参数（默认为 0）`);
+  ok(
+    /stampUsed\(billedChars = 0\)/.test(s),
+    `${p}：stampUsed 有参数（默认为 0）`
+  );
   ok(/billedCharsTotal \+= billedChars/.test(s), `${p}：真的累加`);
-  ok(/billedCharsTotal > 0 \? \{ billedCharsTotal \}/.test(s), `${p}：readout 把它带出去`);
+  ok(
+    /billedCharsTotal > 0 \? \{ billedCharsTotal \}/.test(s),
+    `${p}：readout 把它带出去`
+  );
 
   // 顺序：累加必须出现在「节流」与「早退」之前
   const atAcc = s.indexOf("billedCharsTotal += billedChars");
   const atRec = s.indexOf("if (rec === null) return;", atAcc - 2000);
   const atThrottle = s.indexOf("stampThrottleMs", atAcc);
-  ok(atAcc > 0 && atRec > atAcc, `${p}：累加在 rec === null 早退之前`, `acc@${atAcc} rec@${atRec}`);
+  ok(
+    atAcc > 0 && atRec > atAcc,
+    `${p}：累加在 rec === null 早退之前`,
+    `acc@${atAcc} rec@${atRec}`
+  );
   ok(
     atAcc > 0 && (atThrottle === -1 || atAcc < atThrottle),
     `${p}：累加在节流判断之前`,
-    `acc@${atAcc} throttle@${atThrottle}`,
+    `acc@${atAcc} throttle@${atThrottle}`
   );
 }
 
-console.log("\n=== 客户端：那一行把它显示出来（产物）===");
-{
-  const s = read("lib/client.js");
-  ok(/voice\?\.billedCharsTotal/.test(s), "状态行读了 billedCharsTotal（带可选链，取不到不显示）");
-}
+// 客户端那一行（`voice?.billedCharsTotal`）的产物文本断言已删除（2026-10-03）：
+// 产物只经 `npm run build` 生成，「产物 = 构建输出」由 pre-commit 的
+// `build 后 lib/ 无 diff` 守住 —— 对 bundle 文本断言等于断言 esbuild 的转义风格，
+// 换版本就误报。src 侧的接线断言在上面两节里。
 
 console.log(`\n=== 结果：${pass} 通过 / ${fail} 失败 ===`);
 console.log("（这是接线与顺序的检查；运行时行为要有真凭据的机器才验得了。）");
