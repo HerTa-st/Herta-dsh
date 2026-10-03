@@ -95,7 +95,7 @@ rmSync(dir, { recursive: true, force: true });
 check("临时目录已清理", !existsSync(dir));
 
 // ── 3. 两半的 ref 必须是同一个名字 ────────────────────────────────────────
-const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
+const clientText = readFileSync(join(root, "src", "client", "settings.ts"), "utf8");  // 设置页那一层（#2 之后住在 settings.ts）
 const hostText = readFileSync(join(root, "src", "host", "minimax-voice.js"), "utf8");
 const clientRef = /ref:\s*"(FISH_API_KEY)"/.exec(clientText)?.[1];
 const hostRef = /FISH_KEY_REF\s*=\s*"(FISH_API_KEY)"/.exec(hostText)?.[1];
