@@ -15,6 +15,19 @@
 #
 # 设置（Config）的真相就在这一行的 config 里，命名空间 = 条目 id `herta`；
 # 删掉 profile 里那条覆盖式条目只会让设置回落默认值，不会让插件消失。
+#
+# `ui-theme-herta` 是本包那一笔「自带主题」的接线：它按名字解析 dsh-theme-herta，
+# 本包 patch 出来的这一行就是主题唯一的挂载点。两个前情：
+#
+#   1. **主题包自己的 `cordis.patch.yml` 不会自动应用** —— loader 只从 profile 的
+#      `dsh.profile.bundles` 里挑 bundle 的 patch；dsh-theme-herta 只是本包的依赖，
+#      它的 patch 谁也不会去读，所以这一行必须在这里补上。
+#   2. 如果 profile 的 bundles 里又单独收了 dsh-theme-herta，它的 patch 会再插一条
+#      同名条目 —— 实测（dsh 0.2.0-rc.2）重复 id 不会让 profile 启动失败：装载器按
+#      id 建索引，后者覆盖前者，两个来源的 name 又都是 dsh-theme-herta。知道就好，
+#      不必为它加防护。
 - insert:
     - id: herta
       name: dsh-herta
+    - id: ui-theme-herta
+      name: "dsh-theme-herta"
