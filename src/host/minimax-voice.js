@@ -665,9 +665,10 @@ export function installMiniMaxSpeech(ctx) {
 export const hertaSayTool = defineTool({
   name: "herta_say",
   description:
-    "让黑塔用她自己的声音说一句话（按当前语音引擎合成：MiniMax 云端克隆音色，"
-    + "或本地离线模型；不是录音片段）。用于调试语音链路：它会真的合成音频并把声音推给界面。"
-    + "云端不可用时会回落到本地模型，并在结果里注明用的是哪条引擎。",
+    "让黑塔用她自己的声音说一句话（按当前语音引擎合成，四档见 voiceEngine："
+    + "minimax 云端克隆音色 / local 本地离线模型 / fish Fish Audio / mimo 尚未接线；"
+    + "不是录音片段）。用于调试语音链路：它会真的合成音频并把声音推给界面。"
+    + "minimax 云端不可用时会回落到本地模型，并在结果里注明用的是哪条引擎。",
   parameters: {
     text: { type: "string", description: "要说的话（中文）。" },
   },
@@ -677,7 +678,10 @@ export const hertaSayTool = defineTool({
       additionalProperties: false,
       properties: {
         ok: { type: "boolean", description: "是否真的出声了。" },
-        engine: { type: "string", description: "实际使用的引擎：minimax | local。" },
+        engine: {
+          type: "string",
+          description: "实际使用的引擎：minimax | local | fish | mimo（mimo 尚未接线，会拒绝）。",
+        },
         text: { type: "string", description: "实际说的话。" },
         note: { type: "string", description: "没出声时的原因。" },
       },
@@ -703,6 +707,8 @@ export const hertaSayTool = defineTool({
     if (out === null) {
       return { ok: false, engine: "", text, note: mini.engineNote ?? "合成失败（看宿主日志）" };
     }
-    return { ok: true, engine: out.engine ?? "minimax", text, note: "" };
+    // Q25：引擎名**从 adapter 的 name 取**（router 已经把它放进 out.engine），
+    // 不再写死 "minimax" —— 那个兜底在 fish / local 时会报错身份。
+    return { ok: true, engine: out.engine ?? mini.engineOf(), text, note: "" };
   },
 });
