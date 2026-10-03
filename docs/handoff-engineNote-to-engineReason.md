@@ -116,4 +116,33 @@ git hash-object -- lib/...   vs   git rev-parse HEAD:lib/...
 逐字节一致、好让 `build 后 lib/ 无 diff` 那条守卫通过 ✓，还得先拿到那批 hash 钉住的素材 ✓
 （或者在有完整 `Herta-src` + 素材的机器上做 ✓，那是更短的路 ✓）。
 
+## 六、顺带收尾：候选 #4 的两处抄本（同一台机器一起做）
+
+`settings-schema.js` 与 `voice-settings-shared.js` 各自还留着一份引擎取值域的抄本：
+
+```js
+export const VOICE_ENGINES = Object.freeze(["local", "minimax", "fish", "mimo"]);
+```
+
+**实测（2026-10-03，同一上游、两次构建的 A/B）**：把这两处改成从
+`src/host/voice-engines.js` 派生之后，`lib/client.js` **会变**（496.4 KB → 496.5 KB，哈希不同）。
+所以它**不能只改源码** —— 必须和上面第 3/4 笔后半、第 ⑤ 项**在同一台能重建客户端的机器上**一起做。
+
+改法与验收：
+
+- 两处那一行各自换成：
+
+  ```js
+  import { VOICE_ENGINES } from "./voice-engines.js";
+  export { VOICE_ENGINES };
+  ```
+
+  （对外名字不变，`voice-settings-shared.js` 的消费方不用动 —— 尤其**别**把 641 行的
+  字段表拖进客户端包，那正是 `voice-engines.js` 单独成文件的原因。）
+- **单独改 `settings-schema.js` 那一处是中性的**（实测两版 bundle 逐字节相同）；
+  造成差异的是 `voice-settings-shared.js`（客户端模块多出一个 import 节点）。
+- 验收：`npm run build` 之后 `git diff --exit-code -- lib` 为空（ADR-0003 的那条守卫）。
+- 做完之后，加一档引擎才真的**只动 `voice-engines.js` 一处**。
+
+
 
