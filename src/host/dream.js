@@ -25,14 +25,14 @@
  *
  * **蒸馏不绕门**：两条路径都走 `promoteFeian` 的三道门。
  *
- * ## 拿 llm 服务的方式（一个丑陋但必要的绕路）
+ * ## 拿 llm 服务的方式
  *
  * 工具的 `execute(args, exec)` **拿不到 `ctx`**（`exec` 上只有 agent / callId /
  * name / arguments / signal），而蒸馏需要 `ctx.llm` 服务。所以叙述层挂载时把
- * `ctx.llm` 放进 `globalThis.__DSH_HERTA_HOST__`，这里读回来。
+ * 作用域上下文与 llm 交给 `host-deps.js` 那条**具名依赖通道**，这里读回来。
  *
- * 为什么 `globalThis` 可以接受：这正是本插件一贯的做法 —— DSH 不把宿主 cordis
- * 上下文暴露出来，`globalThis.__DSH_HERTA__`（客户端）就是这个理由建的。
+ * 依赖缺席是**正常状态**（没有 llm 的组合：无头 / SDK）：那时候给一条可操作的
+ * 拒绝理由（「宿主没有可用的 llm 服务」），而不是笼统失败。
  * 别的工具（记忆/发声）不需要它，因为它们不调 LLM。
  */
 import { createHash } from "node:crypto";
@@ -40,6 +40,7 @@ import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promis
 import { dirname, join } from "node:path";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { promoteFeian, titlesOf } from "./feian.js";
+import { getHostCtx, getHostLlm } from "./host-deps.js";
 import { NARRATIVE_REL, readNarrative } from "./narrative.js";
 import { pickExcerpt } from "./session-surface.js";
 import { resolveRoute } from "./supervisor.js";
@@ -291,7 +292,7 @@ export const hertaDreamTool = defineTool({
     // ── 路径二：蒸馏 ────────────────────────────────────────────────────────
     // 她说「沉淀一下」，宿主另起一次 LLM 调用产出候选，再过同一道门。
     if (args.distill === true) {
-      const g = globalThis.__DSH_HERTA_HOST__;
+      const llm = getHostLlm();
       const session = exec.agent?.session;
       const nodes = session?.surface?.nodes ?? [];
       const excerpt = pickExcerpt({
@@ -304,7 +305,7 @@ export const hertaDreamTool = defineTool({
       // 她（或用户）需要知道是「没有片段」还是「没有模型可用」。
       const route = resolveRoute(exec.agent);
       const blocker =
-        g?.llm === undefined || g?.llm === null
+        llm === undefined || llm === null
           ? "宿主没有可用的 llm 服务（叙述层未挂载，或该组合里没有 llm）"
           : excerpt.trim().length === 0
             ? "这个会话里还没有可用的对话片段"
@@ -332,7 +333,7 @@ export const hertaDreamTool = defineTool({
       // 动态 import：见文件头的说明（静态会把整个插件拖下水）。
       const { distillFeian } = await import("./dream-distill-llm.js");
       const outcome = await distillFeian({
-        ctx: g.ctx,
+        ctx: getHostCtx(),
         route,
         excerpt,
         existingTitles: titlesOf(before.files),

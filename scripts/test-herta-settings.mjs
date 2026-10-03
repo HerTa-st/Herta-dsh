@@ -31,6 +31,7 @@ import {
   FIELD_NAMES,
   FIELDS,
   SETTINGS_GROUPS,
+  SETTINGS_NAMESPACE,
   UNWIRED_FIELD_NAMES,
   WIRED_FIELD_NAMES,
   groupOfField,
@@ -216,6 +217,27 @@ console.log("herta-settings");
   );
   check("客户端按描述符的 widget 分派（不再按字段名硬编码）", !/field === "voiceEngine"/.test(clientCode));
   check("客户端按 trailer 挂组尾（不拿显示文案当逻辑 key）", !/entry\.title === "/.test(clientCode));
+}
+
+// ── 1d. 设置命名空间：跨进程一份声明（防「设置页空白」那类静默失效）──────────
+// 宿主与客户端必须用同一个 id，否则客户端 `ctx.configForms.get(ns)` 拿到 undefined
+// —— 症状是设置页空白、写入静默无效，而两边代码看起来都对。原先各写一份字面量，
+// 只靠客户端一段注释提醒，没有任何守卫。
+{
+  check("命名空间是 herta（profile 条目 id）", SETTINGS_NAMESPACE === "herta");
+
+  const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
+  const clientCode = clientText.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check(
+    "客户端从字段表取命名空间（不再自写字面量）",
+    /const\s+MACHINE_NS\s*=\s*SETTINGS_NAMESPACE\s*;/.test(clientCode),
+  );
+  check("客户端没有再把 \"herta\" 写死成命名空间", !/MACHINE_NS\s*=\s*"herta"/.test(clientCode));
+
+  const hostText = readFileSync(join(root, "src", "host", "index.js"), "utf8");
+  const hostCode = hostText.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("宿主也从同一个常量再导出", /HERTA_SETTINGS_NAMESPACE\s*=\s*SETTINGS_NAMESPACE\s*;/.test(hostCode));
+  check("宿主没有再把 \"herta\" 写死成命名空间", !/HERTA_SETTINGS_NAMESPACE\s*=\s*"herta"/.test(hostCode));
 }
 
 

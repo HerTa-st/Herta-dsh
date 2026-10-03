@@ -44,6 +44,7 @@ import {
   FIELDS,
   normalizeSettings,
   SETTINGS_GROUPS,
+  SETTINGS_NAMESPACE,
   UNWIRED_FIELD_NAMES,
 } from "../host/settings-schema.js";
 // MiniMax 语音的两件纯逻辑：base64 → Int16 PCM 的解码，与按 utteranceId/seq 交付的
@@ -70,12 +71,15 @@ const FULL_VIEW_ID = "herta-full";
 /**
  * 设置命名空间 = 宿主那条 profile 条目的 id。
  *
- * 字面量，不 import 宿主模块：客户端包不得依赖宿主包（DSH 的
- * `packages/client/tsdown.client.ts` 纯净度门），官方四个伴生设置页也全都
- * 在客户端重写一遍这个常量。它与 `src/host/index.js` 的
- * `HERTA_SETTINGS_NAMESPACE` 必须是同一个字符串。
+ * 从 `settings-schema.js` import（**不是**在客户端重写一遍字面量）：那个模块
+ * 零 import，esbuild 直接内联，与 `FIELDS` 走同一条路。客户端包不得依赖**宿主包**，
+ * 但共享的纯数据模块可以 —— 这也是 2026-10-03 之前那段注释自相矛盾的地方：
+ * 它一边说「不 import 宿主模块」，一边这个文件已经在 import 同一份字段表。
+ *
+ * 两处必须是同一个字符串（宿主 `HERTA_SETTINGS_NAMESPACE` 也从这里取），
+ * 否则客户端拿到 undefined：设置页空白、写入静默无效。测试钉着这条。
  */
-const MACHINE_NS = "herta";
+const MACHINE_NS = SETTINGS_NAMESPACE;
 
 /** `ctx.configForms.get(ns)` 返回的那张表单（只列本文件用到的成员）。 */
 interface MachineForm {

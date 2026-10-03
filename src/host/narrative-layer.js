@@ -68,6 +68,12 @@ import {
 } from "./beat-policy.js";
 import { SilenceBudget, buildSilentTurnNotice, inspectTurnActivity } from "./silence-guard.js";
 import { markPhase } from "./narrative-beacon.js";
+// 诊断总线（写事实）与依赖通道（送服务）**是两个模块** —— 2026-10-03 之前它们
+// 挤在同一个 globalThis 对象里，外部看不出哪个 key 是依赖、哪些是诊断。
+import { marks } from "./host-marks.js";
+import { getHostCtx, setHostLlm } from "./host-deps.js";
+// 会话 v4 的 source kind 只有一处定义（原先本文件里四个字面量 + 两个模块各一个常量）。
+import { PLUGIN_SOURCE } from "./plugin-source.js";
 
 /** 一次探测的结果缓存。 */
 let probeCache = null;
@@ -187,7 +193,7 @@ export async function reviewTurn({ ctx, agent, turn, signal, budget, marks }) {
     agent.steer(
       createUserMessage({
         content: [{ type: "text", text }],
-        source: { kind: "plugin:dsh-herta" },
+        source: PLUGIN_SOURCE,
       }),
     );
     marks.supervisorVetoes = (marks.supervisorVetoes ?? 0) + 1;
@@ -274,7 +280,7 @@ export async function guardSilentTurn({ agent, turn, budget, marks }) {
         // `form`/`summary` 是核心 `dsh-repeat-tool-reminder` 用的通知外形：
         // 会话格式 v4 只要求 `kind` 非空且不是字面量 `plugin`，其余字段原样保留
         // （`dsh-session-format-v3-to-v4` 的 `rewriteV3MessageSource`）。
-        source: { kind: "plugin:dsh-herta", form: "notice", summary: `空轮 turn ${turn}` },
+        source: { ...PLUGIN_SOURCE, form: "notice", summary: `空轮 turn ${turn}` },
       }),
     );
   } catch (error) {
@@ -284,7 +290,7 @@ export async function guardSilentTurn({ agent, turn, budget, marks }) {
       agent.steer(
         createUserMessage({
           content: [{ type: "text", text }],
-          source: { kind: "plugin:dsh-herta" },
+          source: PLUGIN_SOURCE,
         }),
       );
     } catch (fallbackError) {
@@ -304,22 +310,17 @@ export async function guardSilentTurn({ agent, turn, budget, marks }) {
 }
 
 /**
- * 把叙述层挂到宿主上，并通过 `globalThis` 暴露诊断信息。
+ * 把叙述层挂到宿主上。
  *
- * 与客户端那套 `globalThis.__DSH_HERTA__` 同一个理由：DSH 不把宿主 cordis
- * 上下文暴露出来，从外部看进去的唯一手段就是一个全局标记。
+ * 诊断事实记进 `host-marks.js` 的 `marks`（挂 `globalThis.__DSH_HERTA_HOST__`，
+ * 外部探针读它）；依赖走 `host-deps.js`。两者原先混在同一个全局对象里。
  *
  * @param {object} ctx - 宿主 cordis 上下文。
- * @returns {Promise<object>} 诊断对象（同时挂在 `globalThis.__DSH_HERTA_HOST__`）。
+ * @returns {Promise<object>} 诊断对象（即 `marks`）。
  */
 export async function installNarrativeLayer(ctx) {
-  const marks = (globalThis.__DSH_HERTA_HOST__ ??= {});
   marks.narrativeInstalled = true;
   marks.installedAt = new Date().toISOString();
-  // 先用原始 ctx 占位；真正的值在下面 `ctx.inject` 的回调里换成效用域上下文
-  // （**只有作用域上下文能取 llm**，见那里的说明）。
-  marks.ctx = ctx;
-  marks.llm = null;
 
   const probe = await probeNarrativeDeps();
   marks.depsOk = probe.ok;
@@ -341,15 +342,13 @@ export async function installNarrativeLayer(ctx) {
   // 这与 `index.js` 里 `ctx.inject(["webServer"], …)` 是同一个已验证的写法。
   ctx.inject(["llm"], (scoped) => {
     // 工具的 `execute(args, exec)` **拿不到 `ctx`**（exec 上只有 agent / callId /
-    // name / arguments / signal），而做梦蒸馏需要 `ctx.llm`。所以把它挂到诊断
-    // 标记对象上，`dream.js` 的蒸馏分支从那里读回来。这条绕路与本插件一贯做法
-    // 一致：DSH 不把宿主 cordis 上下文暴露出来，`globalThis.__DSH_HERTA__` 同理。
+    // name / arguments / signal），而做梦蒸馏需要 `ctx.llm`。所以把服务交给
+    // `host-deps.js` 那条**具名依赖通道**，`dream.js` 从那里读回来。
     // **必须存 `scoped`（inject 回调给的作用域上下文），不是外面的 `ctx`。**
     // cordis 只在声明过依赖的作用域里才允许取服务：用原始 `ctx` 去读 `ctx.llm`
     // 会抛 `cannot get property "llm" without inject` —— 实测踩过，表现是
     // 「复核真的发出去了，但 reviewTurn 里取 llm 时抛错，于是每轮都被放行」。
-    marks.ctx = scoped;
-    marks.llm = scoped.llm;
+    setHostLlm({ ctx: scoped, llm: scoped.llm });
     marks.llmReady = true;
     markPhase("llm", { ok: true });
     console.log("[dsh-herta] llm 服务已就绪（复核与做梦蒸馏可用）");
@@ -379,8 +378,8 @@ export async function installNarrativeLayer(ctx) {
         }
         try {
           // 用 await：钩子是 serial 模式，turn 会在边界提交前等它。
-          // `marks.ctx` 是 inject 回调给的**作用域**上下文（只有它才能取 llm）。
-          await reviewTurn({ ctx: marks.ctx, agent, turn, signal, budget, marks });
+          // `getHostCtx()` 给的是 inject 回调存的**作用域**上下文（只有它才能取 llm）。
+          await reviewTurn({ ctx: getHostCtx(), agent, turn, signal, budget, marks });
         } catch (error) {
           // 兜底：reviewTurn 内部已全程 try，这里再包一层是双保险 ——
           // 复核绝不能让她的 turn 崩掉。
@@ -528,13 +527,12 @@ export async function installNarrativeLayer(ctx) {
             return;
           }
           // 同步注入 —— emit 模式下不 await（钩子不等待观察者）。
-          // source 必须是「生产者自有 kind」：会话格式 v4 会拒绝
-          // `{ kind: "plugin", plugin: "..." }`（整轮 turn 报
-          // `format v4 message requires a producer-owned source kind`）。
+          // source 取自 `PLUGIN_SOURCE`（会话格式 v4 只认「生产者自有 kind」，
+          // 写成 `{ kind: "plugin", plugin: "..." }` 会被拒、整轮 turn 报错）。
           exec.agent.steer(
             createUserMessage({
               content: [{ type: "text", text }],
-              source: { kind: "plugin:dsh-herta" },
+              source: PLUGIN_SOURCE,
             }),
           );
           beatBudget.record(turn);
