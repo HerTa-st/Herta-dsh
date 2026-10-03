@@ -30,6 +30,8 @@
  * 于是同一个规则在四处各实现一遍、且各不相同。
  */
 
+import { ENGINE_FALLBACK } from "./voice-engines.js";
+
 /** 机器可读的失败原因（Q13：文案在边界拼一次，adapter 只给 code）。 */
 export const SYNTH_CODES = Object.freeze({
   /** 合成成功。 */
@@ -142,9 +144,12 @@ export function createSynthRouter(opts) {
       return { ...wrapped.audio, engine: wrapped.name };
     }
 
-    // 失败：要不要回落到 local？**这是 router 的规则**（Q1）。
-    if (wanted === "minimax") {
-      const local = adapterFor("local");
+    // 失败之后要不要换一档？**这是 router 的规则**（Q1）；规则的内容在
+    // `voice-engines.js` 的 `ENGINE_FALLBACK` 里 —— **表里没有的档就是不回落**
+    // （`fish` 是用户明确选的那一档，换个声音比没声音更糟）。
+    const fallbackName = ENGINE_FALLBACK[wanted];
+    if (fallbackName !== undefined) {
+      const local = adapterFor(fallbackName);
       if (local !== null) {
         log(`回落到本地模型：${wrapped.code}`);
         const fb = await runAdapter(local, req);
