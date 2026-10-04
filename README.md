@@ -700,6 +700,55 @@ MIT 范围内**，权利归米哈游及各自所有者。本仓库已按《崩�
 
 ## 版本历史
 
+### v0.1.8
+
+**语音与界面各回各家** —— 架构审查的五个部分全部落地：四档语音引擎收成一个 interface，
+`index.tsx`（3196 行）拆成五个零依赖的 region，取值域与叙述层的隐式 interface 各自收口；
+顺手修掉三个真 bug，其中一个是「合成一失败，状态回执就断」。
+
+- **语音合成器只剩一个 interface（candidate #1）**：新增 `src/host/synth-registry.js` ——
+  四档引擎（`local` / `minimax` / `fish` / `mimo`）各成一个 adapter 工厂进一张表，
+  选哪一档、失败要不要回落（**只有 `minimax → local`**）、取消转发给谁，全归一个 router；
+  原先压在 `synthUnit` 里的 95 行 `if` 链退休（`synthUnitLegacy` 已删）。
+  失败只给机器可读的 `code`（`no_key` / `network` / `refused` / …），中文在边界拼一次。
+- **客户端 `index.tsx` 拆成四个 region（candidate #2）**：`machine.ts` / `voice.ts` /
+  `ui.ts` / `settings.ts`，外加 `.opus` 播放那条路单独成 `opus.ts`（47 行）；
+  `index.tsx` 从 3196 行降到 364 行，只做装配。四个 region 之间**零依赖** ——
+  改 PCM 播放不必再碰设置页的 diff。状态归它所在的层独占，外面只经显式入口
+  （`bindMachineForm` / `stopVoiceModelTimer` —— 此前装配层直接给模块的变量赋值，
+  拆分后 esbuild 会当场报 `Cannot assign to import`）。
+- **测试从「抓源码文本」改成「穿过 interface」（candidate #3）**：`test-fish-proxy`
+  的 11 条文本断言、`test-fish-key` 的几条，都改成读值或调用接口；
+  `test-subagent-skip.mjs` 删除（它的三条断言由运行时测试覆盖）。
+  新增 `scripts/test-client-regions.mjs` —— 靠 `scripts/client-test-hook.mjs` 把
+  `react` / `react-dom/client` / `@gui/*` 指到最小桩，于是**未打包的客户端 module
+  可以被裸 Node import**，客户端内部第一次有了可断言的行为。
+- **引擎取值域收成一个声明（candidate #4）**：四档的合法值与可发声判定各自只写一处
+  （`voice-engines.js`），设置页的选项、schema 的 enum、宿主的分发都从它派生；
+  回落规则也变成一张表（表里没有的档就是不回落）。
+- **叙述层的隐式 interface 收口（candidate #5）**：依赖通道（`host-deps.js`）与
+  69 个诊断字段的总线（`host-marks.js`）拆开，子代理闸门收成一个 helper（三处调用）。
+- **顺手修掉的三个真 bug**（都是「全面检查」抓出来的，不是五部分的内容）：
+  - **合成一失败，状态回执就断**：删旧代码时把紧邻的 `reasonText` 局部函数一起删了，
+    而唯一调用点留着 —— 每次失败都抛 `ReferenceError`，被管线吞掉，于是试听没有回执、
+    `engineNote` 不更新，fish 档（按设计不回落）彻底静音。已补回并加了断言。
+  - **「没密钥」被静默说成「失败」**：`SYNTH_CODES` 漏了 `no_key` 这一项，
+    `codeOf()` 那条判断求值成 `undefined`，被兜底逻辑吞成 `other`；
+    现在每档自报「我为什么用不了」（`unavailableCode()`），没密钥就是 `no_key`。
+  - **Fish 的文件兜底被掐死**：鱼档的可用性只认 DSH 凭据，于是把
+    `fish_config.json` 里那条 keyFile 兜底也判成「不可用」；改问 `fish-tts.js` 自己。
+- **取消现在真的取消得到人**：router 那句「转发给所有带 `cancel` 的 adapter」此前
+  转发给零个（四档都没实现这个可选方法，而 minimax 合成器的 `cancel` 一直存在）——
+  用户打断时在飞的云端请求不会被中断。现在接上了，并用**真工厂**加了断言
+  （此前那组用的是假 adapter，只能证明「router 会转发」）。
+- **`herta_say` 的引擎名不再写死 `minimax`**：成功返回的兜底改从当前档取，
+  工具说明与 `output.engine` 的描述四档全列 —— 此前用 fish 或本地时它会报错身份（PR #12）。
+- **新增 `scripts/test-synth-registry.mjs`**：router 的四档/回落/失败码第一次有行为覆盖。
+- **验证**：`npm test` 链 **29 组 1446 项全过、0 失败**。
+- **仍未接 / 仍未决**：`mimo` 合成器仍无调用点（选择器里点得动、会如实说明为什么不发声）；
+  主题 `lib/opening/` 的上游授权未决；「黑塔外观」那些值存在浏览器 `localStorage`，
+  换机器不带走；`theme` / `deviceScene` 两个字段 DSH 侧无消费方。
+
 ### v0.1.7
 
 **装完就有主题** —— 紫罗兰配色、开机 ASCII 开场、可换背景与「黑塔外观」设置页，
