@@ -179,5 +179,50 @@ eq("minimax：成功时带音频", (await minimaxOk.synthesize(req)).audio?.tag,
   eq("Q18 fish 没密钥 → code = no_key", noKey.lastCode().code, SYNTH_CODES.no_key);
 }
 
+// ── Q9（真 adapter 那一半）：router 转发得对，**真实的那档还得接上** ────────
+//
+// 上面那组 Q9 用的是假 adapter —— 假 adapter 都带 `cancel`，所以它只能证明
+// "router 会转发"。真实的一档有没有 cancel 是另一件事：四档都实现契约里的
+// **可选** `cancel` 时，转发就是转发给零个（注释说得对、行为是空的）。
+// 这一组用**真工厂**钉住"有真取消的那一档真的接上了"。
+{
+  const aborted = [];
+  const mm = createMinimaxAdapter({
+    synthesizer: {
+      available: () => true,
+      synthesize: async () => null,
+      status: () => ({}),
+      cancel: (id) => aborted.push(id),
+    },
+    describe: () => "",
+  });
+  eq("Q9 minimax adapter 暴露了 cancel（有真取消却没接上 = 等于没实现）", typeof mm.cancel, "function");
+  mm.cancel("u7");
+  eq("Q9 cancel 真的转发到 synthesizer.cancel", aborted[0], "u7");
+
+  // 底下没有 cancel 时必须是空操作（不许抛）—— 契约里 cancel 对 adapter 是可选的。
+  const noCancel = createMinimaxAdapter({
+    synthesizer: { available: () => true, synthesize: async () => null, status: () => ({}) },
+    describe: () => "",
+  });
+  let threw = null;
+  try {
+    noCancel.cancel("u8");
+  } catch (err) {
+    threw = err;
+  }
+  eq("Q9 底层没有 cancel 时不抛（空操作）", threw, null);
+
+  // 真实四档里只有 minimax 该有 cancel；另外两档没有可取消的东西。
+  const localReal = createLocalAdapter({ queue: async () => null, getFailure: () => "x" });
+  const fishReal = createFishAdapter({
+    load: async () => ({ trySynthesizePcm: async () => null }),
+    params: () => ({}),
+    keyPresent: () => true,
+  });
+  eq("Q9 local 刻意没有 cancel（队列＋子进程，靠 ttsStop 丢弃迟到帧）", localReal.cancel, undefined);
+  eq("Q9 fish 刻意没有 cancel（一次性 fetch，没接 signal）", fishReal.cancel, undefined);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
