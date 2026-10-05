@@ -700,6 +700,28 @@ MIT 范围内**，权利归米哈游及各自所有者。本仓库已按《崩�
 
 ## 版本历史
 
+### v0.1.9
+
+**设置页白屏修好了** —— v0.1.8 拆客户端时漏了三处 import，`设置 ▸ 黑塔` 那一页
+打开是空的（本机与 npm 上那份都是）。这一版只有修复，没有新功能。
+
+- **发布到 npm**：`dsh-herta@0.1.9`（N 个文件 / X MB）。
+- **插件市场**：条目已收录，DSH 内置市场搜 `herta` 可一键安装。
+- **这一版的主体**：**修 v0.1.8 的设置页白屏**。`b22ce9b`（#2「拆出 settings 层」）
+  把代码搬进 `settings.ts` 时没把 `./machine.ts` / `./voice.ts` 的 import 带过来 ——
+  `voiceModelState` / `miniMaxState` / `credentialStatus` 等 13 个名字成了自由标识符
+  （`ui.ts` 同样漏 16 个、`voice.ts` 漏 1 个）。esbuild 不会为未绑定的标识符报错
+  （它假设那是全局），所以构建期静默；设置快照变成 `ready`、渲染到语音那几行时抛
+  `ReferenceError`，被 DSH 0.2.0 的**逐项错误边界**接住 —— 导航项还在（label 来自
+  注册），内容区被降级成一个空的 `<div data-slot-error="settings.section">`。
+- **顺手修掉的**：无（这一版不放别的东西）。
+- **验证**：`npm test` 链 **29 组 M 项全过、0 失败**；另有一条针对产物的探针（加载
+  `lib/client.js` → 调注册进 `settings.section` 的组件 → 递归求值所有子组件）：
+  修前 3 处 `ReferenceError`，修后全部通过。
+- **npm 上 0.1.8 已标记废弃**（`npm deprecate`）：装 0.1.8 的请升到这一版。
+- **仍未接**：同 v0.1.8 —— `mimo` 合成器仍无调用点；主题 `lib/opening/` 上游授权未决；
+  「黑塔外观」的值存在浏览器 `localStorage`；`theme` / `deviceScene` 两个字段 DSH 侧无消费方。
+
 ### v0.1.8
 
 **语音与界面各回各家** —— 架构审查的五个部分全部落地：四档语音引擎收成一个 interface，

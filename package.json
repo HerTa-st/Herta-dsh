@@ -1,7 +1,7 @@
 {
   "name": "dsh-herta",
   "description": "Installs Herta (黑塔) as a DeepSeek Harness agent — persona, memory, narrative layer, voice and UI. · DSH 插件：把 Herta（黑塔）作为一个 agent 装进 DeepSeek Harness —— 人设、记忆、语音与界面。",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "icon": "./icon.png",
   "repository": {
     "type": "git",
