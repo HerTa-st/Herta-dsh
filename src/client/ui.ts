@@ -26,6 +26,28 @@ import {
   UNWIRED_FIELD_NAMES,
 } from "../host/settings-schema.js";
 import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
+// 机器层（设置表单 / 凭据缝）：整机 iframe 的应答器要同步读设置值、写字段、查密钥。
+import {
+  clearCredential,
+  credentialStatus,
+  machineField,
+  machineValues,
+  saveCredential,
+  writeMachineField,
+} from "./machine.ts";
+// 语音层：歌词气泡的点击朗读、SSE 音色状态、MiniMax 的动作入口都在那边。
+import {
+  localQueue,
+  playLocalVoice,
+  postMiniMaxAction,
+  postVoiceModel,
+  refreshVoiceModel,
+  registerVoiceSink,
+  stopVoiceModelTimer,
+  voiceModelFacts,
+  voiceModelState,
+  voiceModelSubs,
+} from "./voice.ts";
 function currentDshTheme(): "dark" | "light" {
   return document.documentElement.style.colorScheme === "dark" ? "dark" : "light";
 }

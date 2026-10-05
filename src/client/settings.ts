@@ -26,6 +26,25 @@ import {
   UNWIRED_FIELD_NAMES,
 } from "../host/settings-schema.js";
 import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
+// 机器层：密钥那几行走凭据缝（`machine.js`），不读写 Config。
+import {
+  clearCredential,
+  credentialStatus,
+  saveCredential,
+  subscribeCredentials,
+} from "./machine.ts";
+// 语音层：音色/模型那几行读的是这一层的状态与动作（本地模型下载、MiniMax 认领与试听）。
+import {
+  miniMaxErrorText,
+  miniMaxRetryText,
+  miniMaxState,
+  postMiniMaxAction,
+  postVoiceModel,
+  refreshVoiceModel,
+  subscribeMiniMax,
+  voiceModelState,
+  voiceModelSubs,
+} from "./voice.ts";
 const UNWIRED_HINT =
   "下面这些项在 DSH 里改得动、写得进，但**整机当前不会调用它们**：它们原本只被她自己的设置页读写，或者只被「写回她自己的 settings.json」这条已删除的链路消费。逐行的原因见每一项下面那行小字。";
 

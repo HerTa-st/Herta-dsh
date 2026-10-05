@@ -13,6 +13,8 @@ import {
   normalizeVoiceSettings,
 } from "../host/voice-settings-shared.js";
 import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
+// 音量与静音读的是设置表单那一层（`machineField`）—— 与界面层读的是同一份值。
+import { machineField } from "./machine.ts";
 export let voiceModelState: Record<string, unknown> | null = null;
 
 /** 订阅者（由整机视图的 `onVoiceModel` 挂上）。 */
