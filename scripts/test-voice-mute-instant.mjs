@@ -19,6 +19,7 @@
  */
 import { bindMachineForm, machineValues, setFormValueListener } from "../src/client/machine.ts";
 import { applyMuteNow } from "../src/client/voice.ts";
+import { notifyMuteChanged, subscribeMuteChanged, toggleMuteSetting } from "../src/client/ui.ts";
 
 let pass = 0;
 let fail = 0;
@@ -32,22 +33,40 @@ function check(name, cond) {
   }
 }
 
-/** 一张最小的假表单：能读快照、能被订阅、能被写。 */
+/** 一张最小的假表单：能读快照、能被订阅、能被写，**并把写过的操作记下来**。 */
 function makeForm(initial = {}) {
   let value = { ...initial };
   const listeners = new Set();
+  /** 真发生过的写入：`[[字段, 值], …]`。注意 `writeMachineField` 走的是 `mutate`。 */
+  const writes = [];
+  const applyOps = (ops) => {
+    for (const op of ops) {
+      const field = op?.path?.[0];
+      if (typeof field === "string" && op.op === "set") {
+        writes.push([field, op.value]);
+        value = { ...value, [field]: op.value };
+      }
+    }
+  };
   return {
+    writes,
     getSnapshot: () => ({ status: "ready", value, writable: true }),
     subscribe: (cb) => {
       listeners.add(cb);
       return () => listeners.delete(cb);
     },
     set: async (field, next) => {
+      writes.push([field, next]);
       value = { ...value, [field]: next };
       return true;
     },
     unset: async () => true,
-    mutate: async () => true,
+    mutate: async (ops) => {
+      applyOps(ops ?? []);
+      // 宿主接受之后会回推一帧 —— 真的写入就该让订阅者响一次。
+      if ((ops ?? []).length > 0) for (const cb of listeners) cb();
+      return true;
+    },
     /** 测试用：改一个字段并通知订阅者（模拟设置页/iframe 写入后宿主回推）。 */
     poke(field, next) {
       value = { ...value, [field]: next };
@@ -112,7 +131,42 @@ console.log("voice-mute-instant（静音是不是立刻生效）");
   setFormValueListener(null);
 }
 
-// ── 3. applyMuteNow 本身不抛（没有 AudioContext / 没有 iframe 的环境）──────
+// ── 4. 工具条那个键：写的是**设置**，不是本地 state ─────────────────────────
+//
+// 用户第二次报的就是这个键（"对话顶端按钮的静音不是立刻生效"）。原来它只改本地
+// `useState` —— 只影响标签文字，跟音频链路毫无关系，于是按了"没反应"。
+{
+  const form = makeForm({ voiceMuted: false, voiceVolume: 100 });
+  bindMachineForm(form);
+
+  let local = null;
+  const next = toggleMuteSetting(false, (v) => {
+    local = v;
+  });
+  check("按下就返回新状态（供标签立刻更换）", next === true && local === true);
+
+  // 判据必须看"**写到底发生了没有**"，而不是"快照现在是不是 true" ——
+  // 后者可以被我手动回推一次凑出来，那正是第一版这条断言没抓住变异的原因。
+  check("按下真的写了设置字段（这才是真闸门，不是本地 state）",
+    form.writes.some(([field, value]) => field === "voiceMuted" && value === true));
+  check("写完之后快照里也是 true", machineValues().voiceMuted === true);
+
+  // 镜像那条线：别处改了静音，订阅者要被告知。
+  const seen = [];
+  const off = subscribeMuteChanged((m) => seen.push(m));
+  notifyMuteChanged();
+  check("notifyMuteChanged 把当前值推给工具条", seen.length === 1 && seen[0] === true);
+
+  form.poke("voiceMuted", false);
+  notifyMuteChanged();
+  check("解静音也推给工具条", seen.length === 2 && seen[1] === false);
+
+  off();
+  notifyMuteChanged();
+  check("退订之后不再收到（面板卸载不留监听）", seen.length === 2);
+}
+
+// ── 5. applyMuteNow 本身不抛（没有 AudioContext / 没有 iframe 的环境）──────
 {
   const form = makeForm({ voiceMuted: true, voiceVolume: 30 });
   bindMachineForm(form);
