@@ -301,6 +301,49 @@ function stopLocalVoice(utteranceId?: string): void {
   if (voiceSources.size === 0) voiceEndAt = 0;
 }
 
+/**
+ * **立刻静音**（2026-10-10：用户反馈「点了静音要等她念完当前这句才停」）。
+ *
+ * ## 为什么原来不是立刻的
+ *
+ * 静音这个设置**只在两个地方被读**：调度下一段时（`playLocalVoice` 开头那一句
+ * `machineField("voiceMuted")` 的早退），以及合成前（`synthUnit` 里那次）。两条都是
+ * **"下一次"才生效**的门 —— 已经排进 WebAudio 时间轴的那几段照播不误，于是听感就是
+ * 「等她念完这句才停」。
+ *
+ * ## 这里做三件事，缺一不可
+ *
+ *   1. **增益归零**：`gain` 是所有源共用的那一个节点，把它压到 0 是唯一"马上没声"
+ *      的办法（对已在播的源一样有效）；
+ *   2. **停掉已排的源**并清游标：否则解静音之后，那些本该被丢掉的段还会接着响；
+ *   3. **给 iframe 推一条空 id 的 `ttsStop`**：整机那条路上的声音在 iframe 里，
+ *      父窗口这边停不到它 —— 空 id 是既有协议里"停全部"的写法（见 `onMiniMaxStop`）。
+ *
+ * 不 `suspend()` AudioContext：那会把上下文挂起，解静音后还要等一次 resume，
+ * 而 resume 需要用户手势 —— 静音一次反而把声音永久弄哑，是更糟的失败。
+ */
+export function applyMuteNow(): void {
+  const muted = machineField("voiceMuted") === true;
+  if (voiceAudio !== null) {
+    try {
+      // 解静音时把主音量**按当前设置重新算一遍**（与 `ensureVoiceAudio` 同一套换算），
+      // 而不是简单置 1 —— 否则音量 30 的用户解静音会突然被放到 100。
+      const volume = Number(machineField("voiceVolume"));
+      const level = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume / 100)) : 1;
+      voiceAudio.gain.gain.value = muted ? 0 : level;
+    } catch {
+      voiceAudio.gain.gain.value = muted ? 0 : 1;
+    }
+  }
+  markMinimax("minimaxMuted", muted);
+  if (!muted) return;
+
+  stopLocalVoice();
+  localQueue.stopAll();
+  // 整机 iframe 那条路：声音在它的文档里，只能让它停。
+  if (voiceSinkWindow() !== null) pushVoiceToFrame({ kind: "ttsStop", utteranceId: "" });
+}
+
 /** 一条 PCM 交给 WebAudio：调度到 `max(now, 全局游标)` —— 所有音频首尾相接，不叠声。 */
 export function playLocalVoice(
   utteranceId: string,

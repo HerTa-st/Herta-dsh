@@ -261,10 +261,16 @@ type VoiceIndex = Record<string, readonly string[]>;
 
 /** 一条剪辑的完整 URL。路径里可能有中文与特殊字符，逐段编码。 */
 // `.opus` 播放那条路（点击朗读）已拆到独立文件（#2 精修）。
+//
+// ⚠️ 说明符写 **`./opus.ts`**（与 `./machine.ts` / `./minimax-pcm.ts` 一致），
+// 不写 `./opus.js`：`build.mjs` 的 jsToTs 插件虽然也认 `.js`，但**客户端测试设施
+// （`client-test-hook.mjs`）直连源码加载时不做那个替换** —— 于是 `./opus.js` 会让
+// 整棵模块图解析失败（`test-client-regions` 一直红着，2026-10-10 修）。
+// 磁盘上就是 `.ts`，写 `.ts` 两种加载方式都对。
 import {
   playClip,
   playUrl,
-} from "./opus.js";
+} from "./opus.ts";
 
 
 /** 从数组里随机取一个。 */
@@ -379,6 +385,26 @@ function HertaPanel(props: { bubbles: readonly Bubble[]; voiceCues: readonly Voi
         padding: "8px 16px",
         opacity: 0.85,
         color: "var(--dsw-alias-label-primary)",
+        // ── 吸顶（2026-10-10：用户反馈「上下文一长就点不到，得翻回最上面」）────────
+        //
+        // 这四个键（开场 / 语气 / 声音 / 自动配音）是她唯一常驻的开关，而面板是**长在
+        // 会话流里**的 —— 对话一长，它就滚上去了，想静音得先翻到顶。
+        //
+        // 三个属性缺一不可：
+        //   · `position: sticky` + `top: 0` —— 贴在**最近的滚动祖先**（会话区）顶端；
+        //   · 一层**不透明底板** —— 这个键条原来没有自己的底（直接压在主题壁纸上），
+        //     不铺底的话气泡会从下面透上来，比滚走更难看；
+        //   · `zIndex: 1` —— 让它压在气泡之上（气泡没定位，同层里 sticky 自然在上面，
+        //     但显式写下来，免得以后谁给气泡加了个 `position` 就翻过来）。
+        //
+        // 背景色取 DSH 的 base 令牌、**不取 `backdrop-filter`**：后者在这个壳里
+        // 会强制新建合成层，卷动时和主题的背景图抢绘制（试过，会抖）。
+        // 底板与工具条同宽（左右各 16 的 padding 留在里面），所以滚动内容从它下面过时
+        // 不会在两侧漏出一条。
+        position: "sticky",
+        top: 0,
+        zIndex: 1,
+        background: "var(--dsw-alias-bg-base)",
       },
     },
     [
@@ -405,6 +431,10 @@ function HertaPanel(props: { bubbles: readonly Bubble[]; voiceCues: readonly Voi
     ],
   );
 
+  // 面板左右**不留** padding：工具条要吸顶，它那块底板得铺满面板宽度 ——
+  // 留了边距，滚动的内容就会从两侧各漏出一条（比滚走更难看）。
+  // 于是左右边距挪进里面：工具条自己 `padding: 8px 16px`，气泡那层沿用 `0 16px`，
+  // 内容位置与改动前一致，只有底板因此铺满。
   return createElement("div", { style: { padding: "8px 0 16px" } }, [
     bar,
     createElement("div", { key: "bubbles", style: { padding: "0 16px" } }, renderBubbleList(props.bubbles)),
