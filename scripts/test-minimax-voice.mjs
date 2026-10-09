@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MINIMAX_HOSTS } from "../lib/minimax/api.js";
+import { ENDPOINT_SHAPES } from "../lib/minimax/endpoint.js";
 import {
   ADOPT_COOLDOWN_MS,
   adoptCoolingDown,
@@ -275,6 +276,138 @@ function makeService(opts) {
   });
   await svc.prepare();
   check("认领成功后回调里出现 ready", seen.includes("ready"));
+}
+
+// ── 13. 钉住的音色（2026-10-10 那份中转站 issue 的核心） ────────────────────
+//
+// 背景：中转站用户没有作者账号上那个带 `b1a43133` 标记的克隆，所以「列克隆 →
+// 筛 tag」对他们必然空集 —— 而空集在认领那边是终局失败 `no_clone_key`。
+// 钉住（`pin`）要绕开的就是这一整条路。
+{
+  const PINNED = "relay-voice-001";
+  let state = emptyState();
+  let listCalls = 0;
+  /** 中转站那条路的成功应答：**裸 s16le PCM**（这里给三个样本）。 */
+  const pcm = Buffer.from([0x10, 0x00, 0x82, 0xff, 0x00, 0x20]);
+  const svc = createMiniMaxVoiceService({
+    fetch: async (url) => {
+      // 中转站**没有** /v1/get_voice —— 真打过去就是 404（实测）。这里让它抛，
+      // 以便证明"钉住之后压根不会打它"。
+      if (url.includes("/v1/get_voice")) {
+        listCalls += 1;
+        throw new Error("不该打 /v1/get_voice");
+      }
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.length),
+        text: async () => pcm.toString("binary"),
+      };
+    },
+    key: async () => "sk-relay",
+    load: () => state,
+    save: (next) => {
+      state = next;
+    },
+    log: () => {},
+    shape: () => ENDPOINT_SHAPES.relay,
+    pin: () => ({ voiceId: PINNED, baseUrl: "https://relay.example.com" }),
+  });
+
+  check("钉住后 voice() 立刻可用（不必先 prepare）",
+    svc.voice() !== null && svc.voice().voiceId === PINNED && svc.voice().host === "https://relay.example.com");
+  check("钉住后 readout() 就是 ready（设置页据此显示，而不是「还没认领到克隆」）",
+    svc.readout().phase === "ready" && svc.readout().voiceId === PINNED);
+  check("钉住是纯计算：一次网络都没打", listCalls === 0);
+
+  await svc.prepare();
+  check("校验时也不打 /v1/get_voice（中转站没有这个接口）", listCalls === 0);
+  check("校验后落一条 {voiceId, host} 记录（voice() 要求成对）",
+    state.voiceId === PINNED && state.host === "https://relay.example.com");
+  check("记录里标明这是手填的，不是认领来的", state.adoptedTag === "configured");
+
+  // 服务端说"这个音色不存在"时，**钉住的配置不许被后台抹掉** ——
+  // 原来的实现会清 voiceId，症状是"配好的音色过一会儿又没声了"。
+  svc.markMissing(PINNED);
+  check("markMissing 不动钉住的音色", svc.voice() !== null && svc.voice().voiceId === PINNED);
+  check("markMissing 仍把原因记下来（交给合成/状态行去说）", state.adoptFailure === "voice_missing");
+}
+
+// ── 14. 形状决定"怎么校验音色"：官方列克隆，中转站真合成一次 ─────────────────
+{
+  const PINNED = "relay-voice-002";
+  const seen = [];
+  let state = emptyState();
+  const pcm = Buffer.from([0x10, 0x00, 0x82, 0xff]);
+  const svc = createMiniMaxVoiceService({
+    fetch: async (url) => {
+      seen.push(url);
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.length),
+        text: async () => pcm.toString("binary"),
+      };
+    },
+    key: async () => "sk-relay",
+    load: () => state,
+    save: (next) => { state = next; },
+    log: () => {},
+    shape: () => ENDPOINT_SHAPES.relay,
+    pin: () => ({ voiceId: PINNED, baseUrl: "https://relay.example.com" }),
+  });
+  await svc.prepare();
+  check("校验走的是中转站那条合成路径", seen.some((u) => u.endsWith("/v1/tts/speech")));
+  check("校验用的文本是短句（只花一个字符）", seen.length > 0);
+
+  // (a) **走不通的组合**：选了「中转站」形状、却没填地址 —— 直接说清缺哪一格。
+  //     不能去试官方：中转站形状的路径在官方站点上不存在，而 404 在 `probeShape`
+  //     里算"地址活着"（那是给中转站地址定的规矩），于是会"探通"一个发不出声的地址。
+  let askedUrl = [];
+  const svc2 = createMiniMaxVoiceService({
+    fetch: async (url) => {
+      askedUrl.push(url);
+      return { ok: true, status: 200, text: async () => "{}" };
+    },
+    key: async () => "sk-relay",
+    load: () => emptyState(),
+    save: () => {},
+    log: () => {},
+    hosts: ["https://relay.example.com"],
+    shape: () => ENDPOINT_SHAPES.relay,
+    pin: () => ({ voiceId: PINNED }),
+  });
+  check("只钉音色时 voice() 先返回 null（地址还没定，不猜）", svc2.voice() === null);
+  const stuck = await svc2.prepare();
+  check("选了中转站形状却没填地址 → failed / no_host（而不是静默打官方）",
+    stuck.phase === "failed" && stuck.lastError === "no_host");
+  check("这种组合一次网络都不该打", askedUrl.length === 0);
+
+  // (b) 只钉音色、形状留默认官方 —— 这时去试官方那两条是**对的**（用户手填一个
+  //     官方账号上的音色 id）。这条钉的是"别把正常用法一起拦掉"。
+  let seen2 = [];
+  let state2 = emptyState();
+  const svc3 = createMiniMaxVoiceService({
+    fetch: async (url) => {
+      seen2.push(url);
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ base_resp: { status_code: 0 }, voice_cloning: [{ voice_id: PINNED, created_time: "2026-10-01T00:00:00.000Z" }] }),
+      };
+    },
+    key: async () => "sk",
+    load: () => state2,
+    save: (next) => { state2 = next; },
+    log: () => {},
+    hosts: ["https://api.minimax.io"],
+    pin: () => ({ voiceId: PINNED }),
+  });
+  await svc3.prepare();
+  check("只钉音色时走 probes 探到地址、并落记录",
+    svc3.voice() !== null && svc3.voice().host === "https://api.minimax.io");
+  check("探的是「列克隆」那条路（官方形状）", seen2.some((u) => u.endsWith("/v1/get_voice")));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

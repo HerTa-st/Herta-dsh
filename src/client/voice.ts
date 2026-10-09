@@ -13,8 +13,17 @@ import {
   normalizeVoiceSettings,
 } from "../host/voice-settings-shared.js";
 import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
-// 音量与静音读的是设置表单那一层（`machineField`）—— 与界面层读的是同一份值。
+// 语音与静音读的是设置表单那一层（`machineField`）—— 与界面层读的是同一份值。
 import { machineField } from "./machine.ts";
+// 播放档案（"点哪段读哪段"的复用）与"还在飞的 say 请求"那张表定义在界面层。
+//
+// 2026-10-10 修：这一行在 0.1.8 拆 region 时被漏掉了 —— `onMiniMaxPcm` 里的
+// `rememberSpokenAudio(...)` / `awaitingSpokenTexts` 于是成了**未绑定标识符**，
+// 每一帧 tts 都在那里抛 `ReferenceError`，音频进不了播放队列，而且因为抛在
+// `markMinimax("minimaxAudioPlays", …)` 之前，连诊断标记都不留（表面就是"点了没反应"）。
+// 两个模块本来就互相 import（界面层要点朗读，语音层要推状态），这里再补一条同向的边，
+// 不引入新的循环。
+import { awaitingSpokenTexts, rememberSpokenAudio } from "./ui.ts";
 export let voiceModelState: Record<string, unknown> | null = null;
 
 /** 订阅者（由整机视图的 `onVoiceModel` 挂上）。 */
