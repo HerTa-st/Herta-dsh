@@ -111,7 +111,17 @@ const SPOKEN_AUDIO_LIMIT = 64;
 const SPOKEN_AUDIO_MAX_SAMPLES = 15_000_000;
 let spokenAudioSamples = 0;
 
-function rememberSpokenAudio(
+/**
+ * 把一段刚播完的音频存进档案（键是它念的那段文字），供「点哪段读哪段」复用。
+ *
+ * **`export` 是给 `voice.ts` 的**（那两个调用点住在那边的 `onMiniMaxPcm` 里）。
+ * 2026-10-10 之前这里漏了 `export`、`voice.ts` 也漏了 `import` —— 于是产物里
+ * 只剩两个调用点、零个定义，每一帧 tts 都在 `onMiniMaxPcm` 抛 `ReferenceError`，
+ * 音频进不了播放队列。而这个错**连诊断标记都不留**（抛在 `markMinimax` 之前），
+ * 表面症状就是"点了没反应"。0.1.7 是一整份 `index.tsx`、没有这条 import 的需要，
+ * 0.1.8 拆成四个 region 时漏掉的就是这一行。
+ */
+export function rememberSpokenAudio(
   text: unknown,
   samples: Int16Array,
   sampleRate: number,
@@ -148,7 +158,16 @@ function recallSpokenAudio(text: string) {
  * 顶掉 —— 长的那条回来就成了「无人认领的帧」，被直接放掉，于是它永远进不了
  * 档案，下次再点还得重来。
  */
-const awaitingSpokenTexts = new Map<string, string>();
+/**
+ * [点哪段读哪段] 还在飞的 say 请求：令牌 → 它将来归档用的那段文字。
+ *
+ * 是**表**不是单个格子。长段合成要几十秒，这中间你要是点了别的，单个格子会被
+ * 顶掉 —— 长的那条回来就成了「无人认领的帧」，被直接放掉，于是它永远进不了
+ * 档案，下次再点还得重来。
+ *
+ * `export` 的理由同上：匹配那一步（`onMiniMaxPcm`）住在 `voice.ts`。
+ */
+export const awaitingSpokenTexts = new Map<string, string>();
 
 async function speakText(text: string): Promise<void> {
   const body = text.trim();
