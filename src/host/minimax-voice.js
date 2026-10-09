@@ -53,6 +53,8 @@ import {
 } from "./minimax/pipeline.js";
 import { createMiniMaxSynthesizer } from "./minimax/synthesizer.js";
 import { createMiniMaxVoiceService } from "./minimax/voice.js";
+import { endpointShapeOf } from "./minimax/endpoint.js";
+import { normalizePeak } from "./minimax/peak.js";
 import { synthesize as synthesizeLocal } from "./tts-runtime.js";
 // 常驻合成进程的三个口：状态（给设置页看）、预热（切到本地时叫起来）、卸载时杀掉。
 import { disposeLocalWorker, localWorkerStatus, warmUpLocalWorker } from "./tts-runtime.js";
@@ -224,7 +226,8 @@ function describeUnavailable(mini) {
   if (!mini.keyKnown()) return "没有 MiniMax 密钥";
   const voice = mini.voice.readout();
   if (voice.phase === "failed") return `认领失败（${voice.lastError ?? "unknown"}）`;
-  if (voice.phase !== "ready") return "还没认领到克隆音色";
+  // 钉住的音色也算"有音色可发" —— 否则这句会对着一个已经填好的设置说"还没认领到克隆音色"。
+  if (voice.phase !== "ready") return mini.configuredVoice() ? "钉住的音色还没验过（见宿主日志）" : "还没认领到克隆音色";
   const synth = mini.synthesizer.status();
   if (synth.refusal !== null) return `MiniMax 拒绝（${synth.refusal}）`;
   if (synth.lastFailure !== null) return `MiniMax 失败（${synth.lastFailure}）`;
@@ -249,11 +252,34 @@ function ensureShared(ctx) {
     return value;
   };
 
+  /**
+   * 用户钉住的音色与请求形状（设置里的四个 MiniMax 字段）。
+   *
+   * **每次现读**（volatile 字段会变），所以是函数不是值。四个都可能为空 ——
+   * 全空时 `pin()` 返回 `null`，`voice.prepare()` 走原来那条认领路，
+   * 行为与加这四个字段之前逐字相同。
+   */
+  const configuredVoice = () => {
+    const voiceId = readStringField(mini.config, "minimaxVoiceId", "");
+    const baseUrl = readStringField(mini.config, "minimaxBaseUrl", "");
+    return {
+      ...(voiceId === "" ? {} : { voiceId }),
+      ...(baseUrl === "" ? {} : { baseUrl }),
+    };
+  };
+  const pin = () => {
+    const out = configuredVoice();
+    return out.voiceId === undefined && out.baseUrl === undefined ? null : out;
+  };
+  const shapeOf = () => endpointShapeOf(readStringField(mini.config, "minimaxApi", "official"));
+
   const voice = createMiniMaxVoiceService({
     fetch: fetchLike,
     key: readKey,
     planKey: readPlanKey,
     log: (line) => log(`minimax ${line}`),
+    pin,
+    shape: shapeOf,
     onChange: () => mini?.noteState?.(),
   });
 
@@ -264,6 +290,12 @@ function ensureShared(ctx) {
     voice: () => voice.voice(),
     enabled: () => mini.engineOf() === "minimax",
     log: (line) => log(`minimax ${line}`),
+    // 模型：用户填了就用他填的，留空则交给形状各自的默认（两家清单不重叠）。
+    model: readStringField(mini.config, "minimaxModel", "") || undefined,
+    shape: shapeOf,
+    // 峰值归一化**只给中转站那条形状**：官方回来的峰值本来就在 0.85 量级，
+    // 对它放大等于做一次没必要的削波。判据留在这一处，形状自己不用管音频电平。
+    peak: (samples) => (shapeOf().name === "relay" ? normalizePeak(samples) : samples),
     // 2026-09-30：合成器**一直**在传这个数（`onUsed?.(out.billedChars)`），
     // 是这里把它丢掉的 —— 于是「这一档花了多少」在界面上没有答案。
     onUsed: (billedChars) => voice.stampUsed(billedChars),
@@ -352,6 +384,10 @@ function ensureShared(ctx) {
     readKey,
     readFishKey,
     keyKnown: () => keyKnown,
+    /** 用户钉住的音色 / 地址（空对象 = 没钉）——给状态文案与诊断用。 */
+    configuredVoice,
+    /** 当前的请求形状（官方 / 中转站）。 */
+    shape: shapeOf,
     /** 当前引擎。volatile 字段要走 `.get()`（见 `liveValue` 的注释）。 */
     engineOf: () => readStringField(mini.config, "voiceEngine", "local"),
     /**

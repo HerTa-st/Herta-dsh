@@ -19,7 +19,9 @@
  *     `key()`（异步、每次现读值）。**缓存的是布尔，不是明文密钥。**
  */
 import type { FetchLike, MiniMaxFailure } from "./api.js";
-import { MiniMaxError, MINIMAX_DEFAULT_MODEL, synthesizePcm, withDeadline } from "./api.js";
+import { MiniMaxError, synthesizePcm, withDeadline } from "./api.js";
+import type { EndpointShape } from "./endpoint.js";
+import { DEFAULT_ENDPOINT_SHAPE } from "./endpoint.js";
 import type { SpeechSynthesizer, SynthesizedAudio, SynthesisRequest } from "./types.js";
 import { errorMessage } from "./types.js";
 
@@ -52,7 +54,13 @@ export interface MiniMaxSynthesizerOptions {
   keyKnown: () => boolean;
   voice: () => MiniMaxVoiceRef | null;
   enabled: () => boolean;
+  /** 模型名。**不传就按形状各自的默认**（官方 `speech-2.8-hd`、中转站
+   *  `minimax/speech-02-turbo`）—— 两家清单不重叠，所以默认值不能在这里写死。 */
   model?: string;
+  /** 请求形状（默认官方）。取的是**函数**不是值：用户可能中途改设置。 */
+  shape?: () => EndpointShape;
+  /** 峰值归一化（只由形状声明需不需要，见 `peak.ts`）。 */
+  peak?: (samples: Int16Array) => Int16Array;
   /** 音色处理（上游用它套"空间站终端"的音色）。收 Float32，返回 Float32。 */
   applyEffect?: (samples: Float32Array, sampleRate: number) => Float32Array;
   onVoiceMissing?: (voiceId: string) => void;
@@ -97,8 +105,9 @@ function floatToInt16(samples: Float32Array): Int16Array {
 export function createMiniMaxSynthesizer(opts: MiniMaxSynthesizerOptions): MiniMaxSynthesizer {
   const log = opts.log ?? ((line: string) => console.log(`[herta-minimax] ${line}`));
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const model = opts.model ?? MINIMAX_DEFAULT_MODEL;
   const maxInFlight = Math.max(1, opts.maxInFlight ?? 2);
+  /** 请求形状。每次合成现问 —— 用户在设置里改了「接口形状」不该等到下次重启。 */
+  const shape = (): EndpointShape => opts.shape?.() ?? DEFAULT_ENDPOINT_SHAPE;
 
   let disposed = false;
   let inFlight = 0;
@@ -203,7 +212,9 @@ export function createMiniMaxSynthesizer(opts: MiniMaxSynthesizerOptions): MiniM
           synthesizePcm(opts.fetch, voice.host, key, {
             voiceId: voice.voiceId,
             text: req.text,
-            model,
+            model: opts.model,
+            shape: shape(),
+            peak: opts.peak,
             signal,
           }),
         );

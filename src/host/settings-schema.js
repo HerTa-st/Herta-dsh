@@ -439,6 +439,78 @@ export const FIELDS = Object.freeze({
    */
 
   /**
+   * ── MiniMax 语音（`voiceEngine: "minimax"`，2026-10-10 加）────────────────
+   *
+   * 这四个只在引擎选 `minimax`（或它回落的那条路）时被读，宿主侧消费者是
+   * `minimax-voice.js` 的装配：它把值读出来喂给 `minimax/voice.ts` 的 `prepare()`
+   * 与 `minimax/synthesizer.ts`。
+   *
+   * **四个的默认值都是空** —— 空 = 与加这一组之前的行为**逐字相同**（官方两条地址、
+   * 按 `b1a43133` tag 认领、常量模型）。所以老用户一个字段都不用碰。
+   *
+   * 加它们的理由只有一条：**用第三方中转站的用户接不上**。他们的 key 换不到官方
+   * 平台的音频、也没有作者账号上那个克隆，于是"列克隆 → 筛 tag"必然空集 ——
+   * 而空集在认领那边是终局失败 `no_clone_key`。填了音色 id 就绕开整条认领。
+   *
+   * 密钥**不在这里**（理由同 Fish）：走上面的「密钥」那一组，落 DSH 凭据存储。
+   */
+  /**
+   * 中转站（或自建网关）的地址。空 = 官方那两条（`api.minimax.io` / `api.minimaxi.com`）。
+   * 消费者：`minimax-voice.js` → `voice.prepare()` 的 `pin.baseUrl`。
+   */
+  minimaxBaseUrl: Object.freeze({
+    kind: "text",
+    def: "",
+    placeholder: "https://你的中转站（留空 = 官方两条地址）",
+    label: "MiniMax 地址",
+    wired: true,
+    group: "MiniMax 语音",
+    hint: "换成第三方中转站或自建网关的地址（不带 /v1）。留空则依次试官方国际站与中国站 —— 只有中转站的用户才需要填它。",
+  }),
+  /**
+   * 请求形状。官方原生与中转站那套自家形状（路径、音色字段、回体都不一样，
+   * 实测见 `src/host/minimax/endpoint.ts` 文件头那张表）。
+   * 消费者：`minimax-voice.js` → `endpointShapeOf()`。
+   */
+  minimaxApi: Object.freeze({
+    kind: "enum",
+    values: Object.freeze(["official", "relay"]),
+    def: "official",
+    label: "接口形状",
+    wired: true,
+    group: "MiniMax 语音",
+    enumLabels: Object.freeze({ official: "官方原生", relay: "中转站" }),
+    hint: "「官方原生」= MiniMax 自己的 /v1/t2a_v2；「中转站」= 第三方网关的 /v1/tts/speech（音色字段是扁平的、回裸 PCM）。填了中转站地址却选「官方原生」，表现是 404 或没有音频。",
+  }),
+  /**
+   * 手填的音色 id。填了就**跳过**「列克隆 + 按 tag 筛」整条路。
+   * 消费者：`minimax-voice.js` → `voice.prepare()` 的 `pin.voiceId`。
+   */
+  minimaxVoiceId: Object.freeze({
+    kind: "text",
+    def: "",
+    placeholder: "音色 id（留空 = 自动认领作者那个克隆）",
+    label: "MiniMax 音色 id",
+    wired: true,
+    group: "MiniMax 语音",
+    hint: "你在中转站上克隆出来的音色 id。填了它就不再去找作者账号上那个带 b1a43133 标记的克隆 —— 中转站用户不可能有那个标记，这也是原来接不上的根因。",
+  }),
+  /**
+   * 模型名。空 = 按形状各自的常量（官方 `speech-2.8-hd`、中转站
+   * `minimax/speech-02-turbo`）。
+   * 消费者：`minimax-voice.js` → `createMiniMaxSynthesizer({ model })`。
+   */
+  minimaxModel: Object.freeze({
+    kind: "text",
+    def: "",
+    placeholder: "留空 = 按接口形状用默认模型",
+    label: "MiniMax 模型",
+    wired: true,
+    group: "MiniMax 语音",
+    hint: "中转站通常只认它自己清单里的模型名（例如 minimax/speech-02-turbo）。留空就用该形状的默认值。",
+  }),
+
+  /**
    * 要同步的**工作区**根目录。空 = 不动任何工作区文件。
    * 消费者：无 —— 这个字段的全部用途就是给上一版的写回指路，而写回已删除。
    */
@@ -530,6 +602,10 @@ const GROUP_DECLARATION = Object.freeze([
     title: "语音",
     hint: "这四个值都是宿主真在读的，改完立刻生效。静音只决定「听不听得见」，不决定要不要花钱合成。",
     trailer: "minimax-voice",
+  }),
+  Object.freeze({
+    title: "MiniMax 语音",
+    hint: "只在「语音引擎」选 minimax 时生效。**四个默认值都是空** —— 空就等于原来的行为：官方两条地址、自动认领作者那个克隆、它自己的默认模型。用第三方中转站的人填「地址 + 接口形状 + 音色 id」这三行就能接上（密钥在「MiniMax 密钥」那一行）。",
   }),
   Object.freeze({
     title: "Fish 语音",
