@@ -36,12 +36,11 @@ import {
   MiniMaxError,
   listClones,
   probeEndpoint,
-  probeHost,
   synthesizePcm,
   withDeadline,
 } from "./api.js";
 import type { EndpointShape } from "./endpoint.js";
-import { DEFAULT_ENDPOINT_SHAPE, probeShape } from "./endpoint.js";
+import { DEFAULT_ENDPOINT_SHAPE, probeShape, shapeFor } from "./endpoint.js";
 import type { MiniMaxStateFile } from "./state.js";
 import { adoptCoolingDown, cloneRecordOf, emptyState, readMiniMaxState, writeMiniMaxState } from "./state.js";
 import { errorMessage } from "./types.js";
@@ -56,7 +55,7 @@ export const LEGACY_REFERENCE_TAG = "b1a43133";
 export type MiniMaxVoicePhase = "absent" | "preparing" | "ready" | "failed";
 
 /** 与上游一致：失败原因 = HTTP 层的原因码，外加"没有可认领的克隆"。 */
-export type MiniMaxVoiceError = MiniMaxFailure | "no_clone_key";
+export type MiniMaxVoiceError = MiniMaxFailure | "no_clone_key" | "no_host";
 
 /** 给宿主/设置页读的一份事实（可 JSON 序列化，直接进 SSE 与端点）。 */
 export interface MiniMaxVoiceReadout {
@@ -106,6 +105,14 @@ export interface MiniMaxVoiceOptions {
   pin?: () => { readonly voiceId?: string; readonly baseUrl?: string } | null;
   /** 请求形状（官方 / 中转站）。不传 = 官方，行为与加形状之前相同。 */
   shape?: () => EndpointShape;
+  /**
+   * 这个地址是不是**第三方**（中转站 / 自建网关）。
+   *
+   * 一般**不用传**：不传时按"不在 `hosts` 名单里即第三方"判（`hosts` 默认就是官方
+   * 那两条，所以插件侧的行为正是我们想要的）。只有在"名单不等于官方名单"的场合
+   * 才需要它兜一层。
+   */
+  isThirdParty?: (host: string) => boolean;
 }
 
 export interface MiniMaxVoiceService {
@@ -228,14 +235,50 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
     return configuredVoice()?.voiceId === voiceId;
   }
 
-  /** 请求形状（默认官方）。配置写错不该让语音整个失声，所以这里也兜一次。 */
-  function shape(): EndpointShape {
+  /** 用户声明的请求形状（默认官方）。配置写错不该让语音整个失声，所以这里也兜一次。 */
+  function declaredShape(): EndpointShape {
     try {
       return opts.shape?.() ?? DEFAULT_ENDPOINT_SHAPE;
     } catch (err) {
       log(`读请求形状失败：${errorMessage(err)}`);
       return DEFAULT_ENDPOINT_SHAPE;
     }
+  }
+
+  /**
+   * **这个地址算不算官方** —— 判据就是 `opts.hosts` 那一份名单。
+   *
+   * 名单**默认是官方那两条**（`api.ts` 的 `MINIMAX_HOSTS` 就是它），所以插件的
+   * 行为与"官方两条之外即第三方"完全一致；而测试/自建网关能通过传自己的名单来
+   * 表明"我这些地址就是官方"，不必再注入第二个判断。
+   *
+   * 为什么不做成"官方两条之外一律第三方"：那样连测试里的假 host 都会被判成
+   * 第三方、请求形状被悄悄改掉（2026-10-10 真被自己的测试拦过两次）。
+   */
+  function officialHosts(): readonly string[] {
+    return opts.hosts ?? MINIMAX_HOSTS;
+  }
+
+  /**
+   * **这个地址上该用哪个形状** —— 地址说了算，配置那一格只是意愿。
+   *
+   * 为什么必须有这一步：填了中转站地址却把「接口形状」留在默认「官方原生」时，
+   * 官方那条路径（`/v1/t2a_v2`）打在中转站上必然 404，而用户看到的是
+   * "配置全对、每句都没声"。反过来（只填形状不填地址）会拿中转站路径去打官方，
+   * 同样静默。归正一次，比让用户去猜哪一格没改要诚实得多。
+   *
+   * 形状被改掉时会**记一行日志**：两个人（用户与插件）对同一件事的判断不一致时，
+   * 得有人写下来是谁让的步。
+   */
+  function shapeAt(host: string): EndpointShape {
+    const declared = declaredShape();
+    // 名单由宿主给出（默认官方那两条）。不在名单里就是第三方地址 —— 于是形状归正。
+    const thirdParty = !officialHosts().includes(host);
+    const resolved = shapeFor(host, declared, thirdParty, officialHosts());
+    if (resolved.name !== declared.name) {
+      log(`地址 ${host} 不是官方站点 —— 请求形状按「${resolved.name}」走（配置里写的是「${declared.name}」）`);
+    }
+    return resolved;
   }
 
   function readout(): MiniMaxVoiceReadout {
@@ -245,6 +288,34 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
       ...(lastBilledChars === undefined ? {} : { lastBilledChars }),
       ...(billedCharsTotal > 0 ? { billedCharsTotal } : {}),
     };
+    const configured = configuredVoice();
+    // ── 优先级的顺序就是"这一档现在到底能不能出声"的答案 ──────────────────
+    //
+    // 1) **有地址、有音色** → ready。地址可以是用户钉的，也可以是落盘那条记录里的
+    //    host（我们自己探通过的事实）。钉住的音色在这里就算 ready，而不是等落盘 ——
+    //    否则设置页会显示"还没认领到克隆音色"，`available()`（这一档的活开关）
+    //    在第一次合成前为假，router 直接跳过 `synthesize()` 静默回落本地。
+    // 2) 钉了音色但**两处都没有地址** → failed / `no_host`。这条不能落到 ready：
+    //    `{phase:"ready", host:undefined, lastError:"no_host"}` 是个自相矛盾的读数
+    //    （设置页照着 ready 渲染、合成却发不出去）。
+    // 3) 有落盘记录 → ready。
+    // 4) 其余按认领状态。
+    if (configured !== null && configured.voiceId !== undefined) {
+      const host = configured.baseUrl ?? rec?.host;
+      if (host !== undefined) {
+        return {
+          phase: "ready",
+          voiceId: configured.voiceId,
+          host,
+          ...(rec?.clonedAt === undefined ? {} : { clonedAt: rec.clonedAt }),
+          ...(rec?.lastUsedAt === undefined ? {} : { lastUsedAt: rec.lastUsedAt }),
+          ...billing,
+        };
+      }
+      const stuck: MiniMaxVoiceReadout = { phase: "failed", ...billing };
+      stuck.lastError = (transientError as MiniMaxVoiceError | undefined) ?? "no_host";
+      return stuck;
+    }
     if (rec !== null) {
       return {
         phase: "ready",
@@ -252,18 +323,6 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
         host: rec.host,
         clonedAt: rec.clonedAt,
         lastUsedAt: rec.lastUsedAt,
-        ...billing,
-      };
-    }
-    // 钉住的音色在落盘之前也已经是"ready"：否则设置页会显示"还没认领到克隆音色"，
-    // 而用户明明已经把它填进设置里了 —— 那会让 `available()`（这一档的活开关）
-    // 在第一次合成前为假，router 直接跳过 `synthesize()` 静默回落本地。
-    const configured = configuredVoice();
-    if (configured !== null && configured.voiceId !== undefined) {
-      return {
-        phase: "ready",
-        voiceId: configured.voiceId,
-        ...(configured.baseUrl === undefined ? {} : { host: configured.baseUrl }),
         ...billing,
       };
     }
@@ -344,10 +403,19 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
       // 控制面必须带截止时间：一个被接受却永不回话的连接会把认领永远挂住
       // （上游 2026-09-10 的教训）。probeEndpoint 自带 per-host 截止时间，
       // listClones 这里另套一条。超时的 reason 是 TimeoutError → 分类成 network。
-      const host = await probeEndpoint(opts.fetch, shape(), key, undefined, opts.hosts, MINIMAX_CONTROL_TIMEOUT_MS);
-      const clones = await withDeadline(MINIMAX_CONTROL_TIMEOUT_MS, undefined, (signal) =>
-        listClones(opts.fetch, host, key, signal),
-      );
+      //
+      // 地址从哪来：用户钉了就用他钉的（**不再去试官方** —— 他要的是那个网关，
+      // 打不到就该报错，而不是偷偷回退到官方把整件事变得看不懂）；没钉才探。
+      const host =
+        pin?.baseUrl ??
+        (await probeEndpoint(opts.fetch, declaredShape(), key, undefined, opts.hosts, MINIMAX_CONTROL_TIMEOUT_MS));
+      const hostShape = shapeAt(host);
+      // 只有官方形状才有"列账号克隆"这件事；第三方地址上没有它（也没有那条路径）。
+      const clones = hostShape.supportsVoiceList
+        ? await withDeadline(MINIMAX_CONTROL_TIMEOUT_MS, undefined, (signal) =>
+            listClones(opts.fetch, host, key, signal),
+          )
+        : [];
       const mine = clones
         .filter((c) => isHertaVoiceId(c.voiceId))
         .map((c) => ({ voiceId: c.voiceId, createdMs: createdMs(c.createdTime, 0) }))
@@ -403,7 +471,20 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
     existing: { voiceId: string; host: string } | null,
   ): Promise<MiniMaxVoiceReadout> {
     // 本进程内已经校验过、而且地址也定了（钉过，或者落盘那条记录里有）——不必再打网络。
-    if (pinReady && (pin.baseUrl !== undefined || existing !== null)) return emit();
+    if (pinReady && voice() !== null) return emit();
+
+    // **走不通的组合**：选了「中转站」形状、却没填地址，也没落过记录 ——
+    // 中转站形状的路径（`/v1/tts/speech`）在官方那两条站点上不存在，探过去只会
+    // 拿到 404，而 404 在 `probeShape` 里算"地址活着"（那是给中转站地址定的规矩）
+    // —— 于是会"探通"一个根本发不出声的官方地址。直接说清楚缺哪一格。
+    //
+    // 注意**不能**把"只钉了音色"整个拦掉：那时形状多半还是官方的，走
+    // `opts.hosts` 去试官方两条是**对的**（用户手填一个官方账号上的音色 id）。
+    if (pin.baseUrl === undefined && existing === null && declaredShape().name !== DEFAULT_ENDPOINT_SHAPE.name) {
+      log("选了中转站形状但没填地址：请在设置里填「MiniMax 地址」（中转站/网关地址）");
+      transientError = "no_host";
+      return emit();
+    }
 
     if (adoptCoolingDown(state, now(), cooldownMs)) {
       log("在冷却期内，跳过这次校验");
@@ -434,7 +515,7 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
         (existing === null ? undefined : existing.host) ??
         (await probeEndpoint(
           opts.fetch,
-          shape(),
+          declaredShape(),
           key,
           undefined,
           pin.baseUrl === undefined ? opts.hosts : [pin.baseUrl],
@@ -488,12 +569,11 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
    * 抛出（`MiniMaxError`）才代表这条配置根本走不通 —— 那时由调用方按 code 记失败。
    */
   async function verifyPinnedVoice(host: string, key: string, voiceId: string): Promise<boolean> {
-    // 地址是**第三方**时按合成验（等价于中转站那条路）：官方那两条之外就没有
-    // `/v1/get_voice` 这回事，拿它去问一个中转站必然 404 —— 而用户在设置里选了
-    // 「中转站」形状之外还留着默认的「官方原生」时，正会走到这里。
-    // 判据是地址，不是形状：形状可能没改，地址已经换了。
-    const thirdParty = !opts.hosts?.includes(host) && !MINIMAX_HOSTS.includes(host);
-    if (shape().canVerifyVoice && !thirdParty) {
+    // 形状**跟着地址定**（`shapeAt`）：官方那两条之外就没有 `/v1/get_voice` 这回事，
+    // 拿它去问一个中转站必然 404 —— 而用户在设置里选了「中转站」形状之外还留着
+    // 默认的「官方原生」时，正会走到这里。
+    const hostShape = shapeAt(host);
+    if (hostShape.supportsVoiceList) {
       const clones = await withDeadline(MINIMAX_CONTROL_TIMEOUT_MS, undefined, (signal) =>
         listClones(opts.fetch, host, key, signal),
       );
@@ -503,7 +583,7 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
       synthesizePcm(opts.fetch, host, key, {
         voiceId,
         text: VERIFY_TEXT,
-        shape: shape(),
+        shape: hostShape,
         signal,
       }),
     );

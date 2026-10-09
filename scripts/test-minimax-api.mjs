@@ -19,6 +19,7 @@ import {
   synthesizePcm,
   withDeadline,
 } from "../lib/minimax/api.js";
+import { ENDPOINT_SHAPES } from "../lib/minimax/endpoint.js";
 
 let pass = 0;
 let fail = 0;
@@ -346,7 +347,15 @@ console.log("minimax-api");
   const emptyAudio = await reasonOf(() =>
     synthesizePcm(async () => res(200, JSON.stringify({ data: { audio: "" } })), "https://h", "sk-x", { voiceId: "v", text: "t" }));
   check("data.audio 空串 → other", emptyAudio === "other");
-  const noUsage = await synthesizePcm(async () => res(200, JSON.stringify({ data: { audio: "3412" } })), "https://h", "sk-x", { voiceId: "v", text: "t" });
+  const noUsage = await synthesizePcm(async () => res(200, JSON.stringify({ data: { audio: "3412" } })), "https://h", "sk-x", {
+    voiceId: "v",
+    text: "t",
+    // ⚠️ 地址写"https://h"（不是官方那两个）时，形状会**跟着地址归正**成中转站，
+    // 而中转站那条路的回体是**裸 PCM**、不是 hex JSON —— 于是这行会解不出音频。
+    // 这里要测的是"官方那条路的 hex 解码"，所以把形状钉成官方。
+    // （别把地址换成官方域名：这些用例刻意用一个不可路由的假 host。）
+    shape: ENDPOINT_SHAPES.official,
+  });
   check("缺 usage_characters → billedChars 0", noUsage.billedChars === 0);
 }
 

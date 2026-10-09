@@ -360,36 +360,54 @@ function makeService(opts) {
   check("校验走的是中转站那条合成路径", seen.some((u) => u.endsWith("/v1/tts/speech")));
   check("校验用的文本是短句（只花一个字符）", seen.length > 0);
 
-  // 没有 baseUrl 时先探一次地址，再落记录。
-  const seen2 = [];
-  let state2 = emptyState();
-  const pcm2 = Buffer.from([0x10, 0x00, 0x82, 0xff]);
+  // (a) **走不通的组合**：选了「中转站」形状、却没填地址 —— 直接说清缺哪一格。
+  //     不能去试官方：中转站形状的路径在官方站点上不存在，而 404 在 `probeShape`
+  //     里算"地址活着"（那是给中转站地址定的规矩），于是会"探通"一个发不出声的地址。
+  let askedUrl = [];
   const svc2 = createMiniMaxVoiceService({
     fetch: async (url) => {
-      seen2.push(url);
-      // 探测那个地址：中转站没有 get_voice，回 404 —— 按 `probeShape` 的规则
-      // "路径不存在"算地址活着。
-      if (url.includes("/v1/get_voice")) {
-        return { ok: false, status: 404, text: async () => "<html>not found</html>" };
-      }
-      return {
-        ok: true,
-        status: 200,
-        arrayBuffer: async () => pcm2.buffer.slice(pcm2.byteOffset, pcm2.byteOffset + pcm2.length),
-        text: async () => pcm2.toString("binary"),
-      };
+      askedUrl.push(url);
+      return { ok: true, status: 200, text: async () => "{}" };
     },
     key: async () => "sk-relay",
-    load: () => state2,
-    save: (next) => { state2 = next; },
+    load: () => emptyState(),
+    save: () => {},
     log: () => {},
     hosts: ["https://relay.example.com"],
     shape: () => ENDPOINT_SHAPES.relay,
     pin: () => ({ voiceId: PINNED }),
   });
   check("只钉音色时 voice() 先返回 null（地址还没定，不猜）", svc2.voice() === null);
-  await svc2.prepare();
-  check("探到地址后 voice() 可用", svc2.voice() !== null && svc2.voice().host === "https://relay.example.com");
+  const stuck = await svc2.prepare();
+  check("选了中转站形状却没填地址 → failed / no_host（而不是静默打官方）",
+    stuck.phase === "failed" && stuck.lastError === "no_host");
+  check("这种组合一次网络都不该打", askedUrl.length === 0);
+
+  // (b) 只钉音色、形状留默认官方 —— 这时去试官方那两条是**对的**（用户手填一个
+  //     官方账号上的音色 id）。这条钉的是"别把正常用法一起拦掉"。
+  let seen2 = [];
+  let state2 = emptyState();
+  const svc3 = createMiniMaxVoiceService({
+    fetch: async (url) => {
+      seen2.push(url);
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ base_resp: { status_code: 0 }, voice_cloning: [{ voice_id: PINNED, created_time: "2026-10-01T00:00:00.000Z" }] }),
+      };
+    },
+    key: async () => "sk",
+    load: () => state2,
+    save: (next) => { state2 = next; },
+    log: () => {},
+    hosts: ["https://api.minimax.io"],
+    pin: () => ({ voiceId: PINNED }),
+  });
+  await svc3.prepare();
+  check("只钉音色时走 probes 探到地址、并落记录",
+    svc3.voice() !== null && svc3.voice().host === "https://api.minimax.io");
+  check("探的是「列克隆」那条路（官方形状）", seen2.some((u) => u.endsWith("/v1/get_voice")));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -19,9 +19,9 @@
  *     `key()`（异步、每次现读值）。**缓存的是布尔，不是明文密钥。**
  */
 import type { FetchLike, MiniMaxFailure } from "./api.js";
-import { MiniMaxError, synthesizePcm, withDeadline } from "./api.js";
+import { MINIMAX_HOSTS, MiniMaxError, defaultModelOf, synthesizePcm, withDeadline } from "./api.js";
 import type { EndpointShape } from "./endpoint.js";
-import { DEFAULT_ENDPOINT_SHAPE } from "./endpoint.js";
+import { DEFAULT_ENDPOINT_SHAPE, shapeFor } from "./endpoint.js";
 import type { SpeechSynthesizer, SynthesizedAudio, SynthesisRequest } from "./types.js";
 import { errorMessage } from "./types.js";
 
@@ -55,10 +55,18 @@ export interface MiniMaxSynthesizerOptions {
   voice: () => MiniMaxVoiceRef | null;
   enabled: () => boolean;
   /** 模型名。**不传就按形状各自的默认**（官方 `speech-2.8-hd`、中转站
-   *  `minimax/speech-02-turbo`）—— 两家清单不重叠，所以默认值不能在这里写死。 */
-  model?: string;
-  /** 请求形状（默认官方）。取的是**函数**不是值：用户可能中途改设置。 */
+   *  `minimax/speech-02-turbo`）—— 两家清单不重叠，所以默认值不能在这里写死。
+   *
+   *  收**函数**而不是值：它是构造参数、当场求值，而装配侧读配置时可能碰到
+   *  还没初始化的东西（`minimax-voice.js` 的 `mini` 就是一个 —— 见那边的注释）。 */
+  model?: string | (() => string | undefined);
+  /** 请求形状（默认官方）。取的是**函数**不是值：用户可能中途改设置。
+   *  ⚠️ 它只是"意愿" —— 真正生效的形状由地址归正（见下面的 `shapeAt`）。 */
   shape?: () => EndpointShape;
+  /** 官方那两个站点（配置里那份 host 列表）。用来判"这个地址是不是第三方的"。 */
+  officialHosts?: readonly string[];
+  /** 这个地址是不是**第三方**（见 `MiniMaxVoiceOptions.isThirdParty` 的理由）。 */
+  isThirdParty?: (host: string) => boolean;
   /** 峰值归一化（只由形状声明需不需要，见 `peak.ts`）。 */
   peak?: (samples: Int16Array) => Int16Array;
   /** 音色处理（上游用它套"空间站终端"的音色）。收 Float32，返回 Float32。 */
@@ -106,8 +114,22 @@ export function createMiniMaxSynthesizer(opts: MiniMaxSynthesizerOptions): MiniM
   const log = opts.log ?? ((line: string) => console.log(`[herta-minimax] ${line}`));
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxInFlight = Math.max(1, opts.maxInFlight ?? 2);
-  /** 请求形状。每次合成现问 —— 用户在设置里改了「接口形状」不该等到下次重启。 */
-  const shape = (): EndpointShape => opts.shape?.() ?? DEFAULT_ENDPOINT_SHAPE;
+  /** 请求形状。每次合成现问 —— 用户在设置里改了「接口形状」不该等到下次重启。
+   *
+   *  ⚠️ **最终形状由地址说了算**（`shapeFor`），不是由配置那一格说了算：填了中转站
+   *  地址却把形状留在默认「官方原生」时，官方路径打在中转站上必然 404，
+   *  而用户看到的是"配置全对、每句都没声"。见 `endpoint.ts` 的 `shapeFor`。 */
+  const shapeAt = (host: string): EndpointShape => {
+    const official = opts.officialHosts ?? MINIMAX_HOSTS;
+    const thirdParty = opts.isThirdParty?.(host) ?? !official.includes(host);
+    return shapeFor(host, opts.shape?.() ?? DEFAULT_ENDPOINT_SHAPE, thirdParty, official);
+  };
+
+  /** 当前模型名：现读（用户可能中途改设置），或者用构造时给的固定值。 */
+  const currentModel = (): string | undefined => {
+    if (typeof opts.model === "function") return opts.model();
+    return opts.model;
+  };
 
   let disposed = false;
   let inFlight = 0;
@@ -212,8 +234,9 @@ export function createMiniMaxSynthesizer(opts: MiniMaxSynthesizerOptions): MiniM
           synthesizePcm(opts.fetch, voice.host, key, {
             voiceId: voice.voiceId,
             text: req.text,
-            model: opts.model,
-            shape: shape(),
+            model: currentModel(),
+            shape: shapeAt(voice.host),
+            officialHosts: opts.officialHosts,
             peak: opts.peak,
             signal,
           }),

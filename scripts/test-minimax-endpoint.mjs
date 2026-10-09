@@ -12,8 +12,9 @@ import {
   DEFAULT_ENDPOINT_SHAPE,
   ENDPOINT_SHAPES,
   endpointShapeOf,
+  shapeFor,
 } from "../lib/minimax/endpoint.js";
-import { MINIMAX_RELAY_DEFAULT_MODEL, synthesizePcm } from "../lib/minimax/api.js";
+import { MINIMAX_HOSTS, MINIMAX_RELAY_DEFAULT_MODEL, synthesizePcm } from "../lib/minimax/api.js";
 import { MIN_PEAK, TARGET_PEAK, normalizePeak } from "../lib/minimax/peak.js";
 
 let pass = 0;
@@ -195,6 +196,143 @@ console.log("minimax-endpoint / peak");
   const near = new Int16Array([16000, -16000]);
   const clamped = normalizePeak(near);
   check("放大后仍在 int16 范围内", clamped.every((v) => v >= -32768 && v <= 32767));
+}
+
+// ── 7. 形状跟着地址定（2026-10-10 的联调教训） ──────────────────────────────
+//
+// 这一条钉的是一个**真实发生过的失败**：用户填了中转站地址与音色 id，却把
+// 「接口形状」留在默认的「官方原生」—— 于是请求打到 `{地址}/v1/t2a_v2`，
+// 中转站回 404，而 `prepare()` 仍然报 ready。症状是"看着连上了、每句都没声"，
+// 且**每个音色都一样**（不是某个音色的问题）。
+{
+  check("官方地址 → 官方形状", shapeFor(MINIMAX_HOSTS[0]).name === "official");
+  check("中国站也认（两个地址都算官方）", shapeFor(MINIMAX_HOSTS[1]).name === "official");
+  check("调用方说它是第三方 → 中转站形状（哪怕配置里写着官方）",
+    shapeFor("https://relay.example.com", ENDPOINT_SHAPES.official, true).name === "relay");
+  check("调用方说它是官方 → 官方形状（哪怕地址不在名单里）",
+    shapeFor("https://self.example.com", ENDPOINT_SHAPES.relay, false).name === "official");
+  check("没人表态时**尊重声明**（不把名单外的地址一律当中转站）",
+    shapeFor("https://unknown.example.com", ENDPOINT_SHAPES.official).name === "official");
+  check("调用方声明的官方地址也算官方", shapeFor("https://self.example.com", ENDPOINT_SHAPES.relay, undefined, ["https://self.example.com"]).name === "official");
+
+  // 请求体与模型名都要跟着**地址**走，不是跟着配置那一格走。
+  const seen = [];
+  const pcm = pcmBytes([1, -2]);
+  await synthesizePcm(
+    async (url, init) => {
+      seen.push({ url, body: JSON.parse(init.body) });
+      return res(200, pcm, "audio/mpeg");
+    },
+    "https://relay.example.com",
+    "sk",
+    {
+      voiceId: "v",
+      text: "t",
+      shape: ENDPOINT_SHAPES.official, // 用户没改那一格
+      officialHosts: MINIMAX_HOSTS,
+      thirdParty: true, // 但地址是他自己填的 → 就是第三方
+    },
+  );
+  check("地址是第三方时，路径自动走中转站那条（不是 /v1/t2a_v2）",
+    seen[0].url === "https://relay.example.com/v1/tts/speech");
+  check("地址是第三方时，音色字段是扁平的那种（嵌套写法会回 502）",
+    seen[0].body.voice_id === "v" && seen[0].body.voice_setting === undefined);
+  check("地址是第三方时，模型默认也跟着换成中转站的（不是 speech-2.8-hd）",
+    seen[0].body.model === MINIMAX_RELAY_DEFAULT_MODEL);
+
+  // 反面：地址还是官方，但形状那格被写成了 relay —— 官方地址说了算。
+  const seen2 = [];
+  await synthesizePcm(
+    async (url, init) => {
+      seen2.push({ url, body: JSON.parse(init.body) });
+      return res(200, JSON.stringify({ data: { audio: "0100" } }));
+    },
+    MINIMAX_HOSTS[0],
+    "sk",
+    {
+      voiceId: "v",
+      text: "t",
+      shape: ENDPOINT_SHAPES.relay, // 用户改了这一格，地址还是官方
+      officialHosts: MINIMAX_HOSTS,
+      thirdParty: false,
+    },
+  );
+  check("地址是官方时，路径回到 /v1/t2a_v2（形状那一格写错也不该打错路）",
+    seen2[0].url === `${MINIMAX_HOSTS[0]}/v1/t2a_v2`);
+  check("地址是官方时，音色字段回到嵌套那种", seen2[0].body.voice_setting?.voice_id === "v");
+}
+
+// ── 8. 中转站的错误文案也要能用（它没有平台码，只有一句话） ──────────────────
+//
+// 实测那家回的是 `{"error":{"message":"voice not found: x"}}` —— 没有 `base_resp`、
+// 没有状态码。不认这句话，用户看到的就是一句"失败"，而那句里明明写着原因。
+{
+  const cases = [
+    ["voice not found", 404, "voice_missing"],
+    ["voice id not exist", 200, "voice_missing"],
+    // 注意 `invalid api key` 这句话归 `auth` 而不是 `invalid_key` —— 后者是平台码
+    // **2049** 那一格。这是上游那张表的原样（`classifyStatus` 的判定顺序），
+    // 两种都算"key 不行"，`REFUSALS` 也都收，所以对用户是同一件事。
+    ["invalid api key", 401, "auth"],
+    ["insufficient balance", 402, "quota"],
+  ];
+  for (const [message, status, expected] of cases) {
+    const reason = await reasonOf(() =>
+      synthesizePcm(
+        async () => {
+          const bytes = Buffer.from(JSON.stringify({ error: { message } }), "utf8");
+          return {
+            ok: false,
+            status,
+            headers: { get: () => "application/json" },
+            arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length),
+            text: async () => bytes.toString("utf8"),
+          };
+        },
+        "https://relay.example.com",
+        "sk",
+        { voiceId: "v", text: "t", shape: ENDPOINT_SHAPES.relay },
+      ),
+    );
+    check(`中转站文案「${message}」→ ${expected}`, reason === expected);
+  }
+}
+
+// ── 退出前：模块图的**求值顺序**也要守住 ────────────────────────────────────
+//
+// 2026-10-10 真踩过：为了去掉重复的 host 常量，`api.ts` 去读 `endpoint.ts` 的
+// `OFFICIAL_HOSTS`，而 `endpoint.ts` 本来就导入 `api.ts` —— 于是形成求值期的环，
+// 按 plugin 的入口顺序（先 api）当场
+// `ReferenceError: Cannot access 'OFFICIAL_HOSTS' before initialization`。
+//
+// **之所以没被这一批测试抓住**：测试的入口恰好先加载 `endpoint.js`。
+// 所以这条必须**换个进程、换个入口顺序**验 —— 本文件里怎么 import 都不算数。
+{
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  const { dirname, join } = await import("node:path");
+  const here = dirname(fileURLToPath(import.meta.url));
+
+  for (const first of ["api", "endpoint", "voice", "synthesizer"]) {
+    // 用 `file://` URL 交给动态 import：Windows 的盘符路径直接塞进 import() 会被当成
+    // 协议（`c:`）而报 ERR_MODULE_NOT_FOUND —— 一次真踩。
+    const url = pathToFileURL(join(here, "..", "lib", "minimax", `${first}.js`)).href;
+    try {
+      execFileSync(process.execPath, ["-e", `import(${JSON.stringify(url)}).then(() => console.log("ok"))`], {
+        stdio: "pipe",
+        timeout: 30_000,
+      });
+      check(`先加载 ${first}.js 也能起来（求值期不成环）`, true);
+    } catch (err) {
+      const detail = String(err?.stderr ?? err?.message ?? err)
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l !== "")
+        .slice(0, 1)
+        .join("");
+      check(`先加载 ${first}.js 也能起来（求值期不成环）—— ${detail}`, false);
+    }
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
