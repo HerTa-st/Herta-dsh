@@ -336,6 +336,11 @@ export function applyMuteNow(): void {
     }
   }
   markMinimax("minimaxMuted", muted);
+  // 诊断：这两条是"立刻静音到底有没有被叫到、增益有没有真的归零"的唯一外部凭据。
+  // 浏览器里 `__DSH_HERTA__.minimaxMuteAppliedAt` 没变，就说明调用压根没发生
+  // （而不是"生效了但听不见"）—— 这两种情况的下一步完全不同，所以要分得开。
+  markMinimax("minimaxMuteAppliedAt", Date.now());
+  markMinimax("minimaxGainNow", voiceAudio === null ? "no-audio-ctx" : voiceAudio.gain.gain.value);
   if (!muted) return;
 
   stopLocalVoice();

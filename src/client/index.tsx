@@ -163,6 +163,7 @@ import {
 import {
   HertaFullView,
   HertaView,
+  notifyMuteChanged,
 } from "./ui.js";
 
 
@@ -243,7 +244,12 @@ function installSettingsSection(
     // 只认 `voiceMuted` 这一个字段：监听器每次拿到的都是"**真的变了**"的字段名
     // （见 `onFormChanged`），所以动别的设置不会误掐她正在念的那一句。
     setFormValueListener((changed) => {
-      if (changed.includes("voiceMuted")) applyMuteNow();
+      if (!changed.includes("voiceMuted")) return;
+      // ① 立刻闭嘴：增益归零 + 停掉已排的源 + 让整机 iframe 也停。
+      applyMuteNow();
+      // ② 工具条那个按钮只是**镜像**（真相在设置里），得让它把标签换过来 ——
+      //    设置页改的、iframe 那两个按钮改的、宿主回写的，都要同步。
+      notifyMuteChanged();
     });
     // 表单绑定那一刻先对一次：静音**本来就是开着的**时，增益也该当场归零
     // （比如刚重启应用，而设置里一直存着静音）。

@@ -33,6 +33,7 @@ import {
   machineField,
   machineValues,
   saveCredential,
+  setFormValueListener,
   writeMachineField,
 } from "./machine.ts";
 // 语音层：歌词气泡的点击朗读、SSE 音色状态、MiniMax 的动作入口都在那边。
@@ -273,6 +274,59 @@ import {
 } from "./opus.ts";
 
 
+/**
+ * 工具条那个静音键按下去该做什么 —— **抽成具名函数**，因为它值得被测试戳一下。
+ *
+ * 为什么（2026-10-10 用户第二次报"静音不是立刻生效"）：这个按钮原来只
+ * `setMuted((m) => !m)` —— 一个组件内 state，**只影响标签文字与"自动配语气词"那两条
+ * 判断，跟音频链路毫无关系**。真正拦声音的是设置里的 `voiceMuted`（`playLocalVoice`
+ * 开头那次早退），所以按了它"没反应"，看起来就像"要等话说完"。
+ *
+ * 现在它写设置：那条写入经 `machine` 的订阅回调走到语音层的 `applyMuteNow()`，
+ * 增益当场归零、已排的音频停掉、iframe 收到 `ttsStop` —— 这才是"点了就闭嘴"。
+ *
+ * @param current 当前显示的静音态（来自设置镜像）。
+ * @param markLocal 把本地镜像立刻改掉（乐观更新：按钮不许等宿主回执才变色）。
+ * @returns 新状态。
+ */
+export function toggleMuteSetting(current: boolean, markLocal: (next: boolean) => void): boolean {
+  const next = !current;
+  markLocal(next);
+  void writeMachineField("voiceMuted", next);
+  return next;
+}
+
+/**
+ * 静音状态的订阅者（工具条那个按钮要跟着设置走）。
+ *
+ * 为什么需要：工具条的 `muted` 只是**镜像** —— 真相在设置里（`voiceMuted`）。
+ * 设置页按了、或整机 iframe 那两个按钮按了、或页面刷新时值本来就是静音，
+ * 工具条的标签都得跟着变；否则两处显示会打架（一个说「有声」、实际一声不出）。
+ *
+ * 谁往这里推：装配层接到设置变更回调之后调 `notifyMuteChanged()`（见 `index.tsx`）——
+ * 语音层与界面层互不认识，只能由那个同时认识两边的地方转发。
+ */
+const muteSubs = new Set<(muted: boolean) => void>();
+
+export function subscribeMuteChanged(cb: (muted: boolean) => void): () => void {
+  muteSubs.add(cb);
+  return () => {
+    muteSubs.delete(cb);
+  };
+}
+
+/** 设置里的静音变了：叫醒所有订阅者（坏掉一个不影响别的）。 */
+export function notifyMuteChanged(): void {
+  const muted = machineField("voiceMuted") === true;
+  for (const cb of muteSubs) {
+    try {
+      cb(muted);
+    } catch {
+      /* 一个订阅者坏掉不该影响别的 */
+    }
+  }
+}
+
 /** 从数组里随机取一个。 */
 function pick(list) {
   return list[Math.floor(Math.random() * list.length)];
@@ -286,7 +340,19 @@ function pick(list) {
  */
 function HertaPanel(props: { bubbles: readonly Bubble[]; voiceCues: readonly VoiceCue[] }): unknown {
   const [index, setIndex] = useState(null);
-  const [muted, setMuted] = useState(false);
+  // ⚠️ `muted` 的**真相在设置里**（`voiceMuted`），这里的 state 只是它的镜像。
+  //
+  // 2026-10-10 用户第二次报"静音不是立刻生效"：那时这个按钮只 `setMuted((m) => !m)`
+  // —— 一个组件内 state，**只影响标签文字与"自动配语气词"那两条判断，跟音频链路毫无
+  // 关系**。真正拦声音的是 `voiceMuted`（`playLocalVoice` 开头那次早退），所以按了它
+  // 当然"没反应"，看起来就像"要等话说完"。
+  //
+  // 现在初值从设置读、按下写回设置：那条写入会经 `machine` 的订阅回调通知到语音层，
+  // 于是 `applyMuteNow()` 立刻把增益压到 0（见 `voice.ts` 的那个函数）。
+  const [muted, setMuted] = useState(() => machineField("voiceMuted") === true);
+
+  // 别处改了静音（设置页、整机 iframe 的按钮、或宿主回写）→ 标签跟着变。
+  useEffect(() => subscribeMuteChanged(setMuted), []);
   const [notice, setNotice] = useState("");
   const [autoVoice, setAutoVoice] = useState(true);
 
@@ -417,7 +483,8 @@ function HertaPanel(props: { bubbles: readonly Bubble[]; voiceCues: readonly Voi
       }, "open"),
       button("语气", playParticle, "particle"),
       button(muted ? "🔇 已静音" : "🔊 有声", () => {
-        setMuted((m) => !m);
+        // 写设置（真闸门），不是只改本地 state —— 理由见 `toggleMuteSetting` 的注释。
+        toggleMuteSetting(muted, setMuted);
         setNotice("");
       }, "mute"),
       button(autoVoice ? "自动配音：开" : "自动配音：关", () => setAutoVoice((v) => !v), "auto"),
