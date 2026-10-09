@@ -272,7 +272,72 @@ export async function clearCredential(ref: string): Promise<string | null> {
  *
  * 为什么要有这个函数：原先 `apply` 里是直接 `machineForm = form;` —— 而 `machineForm` 现在住在本文件，
  * 外面直接赋值就成了「给 import 赋值」（v1 就是被 esbuild 这一条挡下的）。状态归这一层独占，外面只经这个口子。
+ *
+ * ## 顺带接上表单的变更通知（2026-10-10）
+ *
+ * `MachineForm` 本来就有 `subscribe` —— 设置一变（**不管是在设置页改的，还是在整机
+ * iframe 里改的**）这里都会响一次。以前没人监听它，于是"静音"这类字段只会在
+ * **下一次**合成/调度时才被读到，听感就是「她念完当前这句才停」。
+ *
+ * 这一层不认识「静音」是什么（那是语音层的事），所以只把人叫起来、把新值交出去；
+ * 谁需要就自己注册一个监听器（`setFormValueListener`）在装配处接上。
  */
 export function bindMachineForm(form: MachineForm | null): void {
   machineForm = form;
+  if (formUnsubscribe !== null) {
+    formUnsubscribe();
+    formUnsubscribe = null;
+  }
+  lastFormValues = null;
+  if (form === null) return;
+  try {
+    formUnsubscribe = form.subscribe(() => onFormChanged());
+    // 绑定之后先对一次：设置页刷新时静音可能**本来就是开着的**，那种情况不该等下次变更。
+    onFormChanged();
+  } catch (error) {
+    markMachine("settingsSubscribeError", String((error as Error)?.message ?? error));
+  }
+}
+
+/** 当前绑定那份表单的退订函数（重绑时先退旧的，免得监听器越积越多）。 */
+let formUnsubscribe: (() => void) | null = null;
+
+/** 上一次见过的值快照 —— 用来判"**哪个字段真的变了**"。 */
+let lastFormValues: Record<string, unknown> | null = null;
+
+/**
+ * 设置变更的监听器。装配层（`index.tsx`）用它接上语音层的"立刻静音"。
+ * 收**变了哪些字段**，而不是整个快照：调用方只关心自己那一个。
+ */
+let formValueListener: ((changed: readonly string[]) => void) | null = null;
+
+export function setFormValueListener(listener: ((changed: readonly string[]) => void) | null): void {
+  formValueListener = listener;
+}
+
+/**
+ * 表单动了：比一遍快照，把**真正变化**的字段名交出去。
+ *
+ * 为什么非要"真的变了"不可：`subscribe` 会因为任何一次写入而响（包括我们自己的
+ * 乐观更新与宿主回写的同一次值）。若把每次响都当成"静音被打开"，用户每动一下
+ * 别的设置都会把正在念的那句掐掉。
+ *
+ * 首次快照不发通知（`lastFormValues === null` 时只记下来）：绑定那一刻不该有副作用 ——
+ * 页面刚打开、她正在念开场白时把声音掐掉，是最容易招人骂的那种"修复"。
+ */
+function onFormChanged(): void {
+  const current = machineValues();
+  const previous = lastFormValues;
+  lastFormValues = current;
+  if (previous === null) return;
+  const changed = [];
+  for (const name of Object.keys(current)) {
+    if (current[name] !== previous[name]) changed.push(name);
+  }
+  if (changed.length === 0) return;
+  try {
+    formValueListener?.(changed);
+  } catch (error) {
+    markMachine("settingsListenerError", String((error as Error)?.message ?? error));
+  }
 }

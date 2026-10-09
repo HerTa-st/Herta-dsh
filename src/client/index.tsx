@@ -93,6 +93,7 @@ import {
   machineValues,
   resolveCredentials,
   saveCredential,
+  setFormValueListener,
   subscribeCredentials,
   watchCredentials,
   writeMachineField,
@@ -136,6 +137,7 @@ const VOICE_MODEL_URL = "/herta-voice-model";
 /** 当前状态；null = 还没问过宿主。 */
 // 「语音」那一层（SSE / PCM / 播放 / 音色状态）已拆到独立文件（#2 第二步）。
 import {
+  applyMuteNow,
   stopVoiceModelTimer,
   localQueue,
   miniMaxErrorText,
@@ -231,6 +233,21 @@ function installSettingsSection(
     bindMachineForm(form);
     mark.settingsBound = true;
     mark.settingsNamespace = MACHINE_NS;
+
+    // ── 静音立刻生效（2026-10-10：用户反馈「要等她念完当前这句才停」）──────────
+    //
+    // 装配在这里是有原因的：这一层**同时**认识设置表单（`machine`）与语音层
+    // （`voice`），而那两个互不认识 —— 让它们直接互相 import 会绕出一圈循环依赖。
+    // 谁把两者接到一起，谁就住在这儿。
+    //
+    // 只认 `voiceMuted` 这一个字段：监听器每次拿到的都是"**真的变了**"的字段名
+    // （见 `onFormChanged`），所以动别的设置不会误掐她正在念的那一句。
+    setFormValueListener((changed) => {
+      if (changed.includes("voiceMuted")) applyMuteNow();
+    });
+    // 表单绑定那一刻先对一次：静音**本来就是开着的**时，增益也该当场归零
+    // （比如刚重启应用，而设置里一直存着静音）。
+    applyMuteNow();
 
     // 原语走模块加载器（见 `loadSeedModule` 的注释）；拿不到就只损失这一页。
     let Component: unknown;
