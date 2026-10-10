@@ -419,22 +419,27 @@ function verifyPublished(ver) {
       check(PASS, "dist.integrity", String(m["dist.integrity"]).slice(0, 48) + "…");
 
       // 逐文件核验：拿**发布提交那一棵树**打包，与 registry 上那份逐文件比。
-      // ⚠️ 两个坑，都踩过：
+      // ⚠️ 三个坑，都踩过：
       //   1. 不能 pack 当前工作区 —— 发布之后工作区通常已前进到下个版本（比对必然不一致）；
       //   2. 不能比 tarball 的 sha1 —— 新检出写 CRLF、发布时那份可能是 LF，字节数就不同。
       //      所以逐文件比：原始字节不同时，**文本文件**再按 EOL 归一后比一次。
+      //   3. `npm pack` 必须带 `--ignore-scripts` —— worktree 里**没有 node_modules**，
+      //      而 `package.json` 的 `prepare` 是 `husky`，于是 pack 直接以
+      //      `command C:\WINDOWS\system32\cmd.exe /d /s /c husky` 失败、两份 tarball 只剩一份，
+      //      这一步就被静默跳过了（2026-10-10 发 0.1.10 时真发生：只报一句 ⚠️）。
+      //      打包产物与 `prepare` 无关，所以两处都关掉脚本执行。
       const wt = mkdtempSync(join(tmpdir(), "herta-tag-"));
       const pubPack = mkdtempSync(join(tmpdir(), "herta-pub-"));
       const tagPack = mkdtempSync(join(tmpdir(), "herta-tagpack-"));
       const pubTree = mkdtempSync(join(tmpdir(), "herta-pubtree-"));
       const tagTree = mkdtempSync(join(tmpdir(), "herta-tagtree-"));
       try {
-        npm("pack", [`dsh-herta@${ver}`, "--pack-destination", pubPack]);
+        npm("pack", [`dsh-herta@${ver}`, "--ignore-scripts", "--pack-destination", pubPack]);
         const add = git("worktree", "add", "--detach", wt, `v${ver}`);
         if (!add.ok) {
           check(WARN, `拉不出 tag v${ver} 的工作树，跳过逐文件核验`, String(add.out).split("\n").filter(Boolean).slice(-1)[0] ?? "");
         } else {
-          run("npm", ["pack", "--pack-destination", tagPack], { cwd: wt });
+          run("npm", ["pack", "--ignore-scripts", "--pack-destination", tagPack], { cwd: wt });
           const pubTgz = readdirSync(pubPack).find((f) => f.endsWith(".tgz"));
           const tagTgz = readdirSync(tagPack).find((f) => f.endsWith(".tgz"));
           if (pubTgz === undefined || tagTgz === undefined) {

@@ -34,3 +34,11 @@ scripts/test-*.mjs
 # 更差。已在 pre-commit 之前就格式化过的根文档（AGENTS/README/RELEASING）不受
 # 影响 —— 它们本来就是 clean 的。
 docs/
+
+# ## 4. 发布脚本：长行是刻意的（机器路径 / registry URL / 中文提示语）
+#
+# `scripts/preflight-release.mjs` 里大量长行拆不开（`E:/deepseek Desktop/...` 这类路径、
+# 长中文说明、`npm view` 的多字段调用）。2026-10-10 实测：prettier 会把它从 524 行改到
+# 719 行（**255 增 / 60 删**）—— 为了两行 `--ignore-scripts` 把整文件重排，代价远大于
+# 「换行风格统一」这点收益。
+scripts/preflight-release.mjs
