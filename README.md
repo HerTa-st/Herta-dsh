@@ -82,7 +82,7 @@
 >    `设置命名空间已就绪：herta（自带页面，不自动生成）`、`整机页面已挂：/herta-ui`，
 >    **不应**出现 `settings.register is not a function`，也不应再出现
 >    `从整机迁移设置：…`（种子已删除）或 `设置写回已挂`（写回已删除）
-> 3. `npm test` → 1059 项（20 组）；`npm run test:integration` → 28 项
+> 3. `npm test` → 1544 项（31 组）；`npm run test:integration` → 28 项
 
 ---
 
@@ -460,7 +460,7 @@ node scripts\test-tts-runtime.mjs
 22 项：运行时能被加载（拿到 sherpa-onnx 版本号）→ 真合成出 **24 kHz 非静音**音频
 → WAV 头/采样数/字节数自洽 → 波形有起伏（不是一条平线）。
 
-`npm test` 跑十三组纯逻辑测试（共 **608 项**）；另有 LLM 路径的集成测试
+`npm test` 跑 31 组（核心测试链 + MiniMax 那一组，共 **1544 项**）；另有 LLM 路径的集成测试
 （28 项，用 mock 的 `ctx.llm` 把管道整条跑通）：
 
 ```powershell
@@ -699,6 +699,70 @@ MIT 范围内**，权利归米哈游及各自所有者。本仓库已按《崩�
 ---
 
 ## 版本历史
+
+### v0.1.10
+
+**声音这条线一次收口** —— MiniMax 中转站可以配了、静音点了就闭嘴、语音工具条不再跟着滚；
+外加两个「能跑但静默错」的真 bug：每一帧 tts 都在抛 `ReferenceError`（任何引擎都没声），
+以及工具条那个静音键压根没接到音频链路上。
+
+- **新功能：MiniMax 中转站可以配了**。四个可选字段 —— `minimaxBaseUrl`（地址）/
+  `minimaxApi`（接口形状）/ `minimaxVoiceId`（音色 id）/ `minimaxModel`（模型名），
+  **默认全空时与加它们之前逐字相同**（官方两条地址 + tag 认领 + `speech-2.8-hd`）。
+  原先三处写死让中转站用户接不上：地址表没有配置入口；认领按 `voiceId.includes("b1a43133")`
+  过滤（那个 tag 是作者账号上那个克隆的标记，中转站不可能有）→ 直接 `no_clone_key`
+  终局失败；模型名是常量。更隐蔽的是 `available()` 要求「有 key **且** 已认领克隆」——
+  中转站用户前一件为真、后一件永远为假，于是 router 在 `runAdapter()` 里就早退了，
+  **静默回落本地、日志里连中转站的痕迹都没有**。
+- **请求形状收进 `src/host/minimax/endpoint.ts`**：路径、请求体、响应解码、错误分类各一条记录，
+  `api.ts` 只认这个 interface（加第三种形状不用碰 `synthesizePcm`）。官方与中转站的形状差异
+  都是**实测事实**：路径 `/v1/t2a_v2` vs `/v1/tts/speech`；音色字段嵌套 vs **扁平**
+  （嵌套写法实测回 502）；回体 `data.audio`（hex）vs **裸 s16le PCM**，且回 PCM 时
+  `content-type: audio/mpeg` 是**假的** —— 所以判形状按字节，不按头。
+- **形状跟着地址定**（`shapeFor`）：地址是官方那两条 → 官方形状；用户自己填的第三方 → 中转站形状。
+  这是四个字段里**唯一一个「不改也能填完其余三格」**的，漏了它的症状是「看着连上了、每句都没声」
+  —— 与音色无关，所以报上来像是「每个模型都连不上」。同一趟挖出并修掉三个真问题：
+  `codeOf()` 靠中文字符串猜 code（音色 id 填错时只显示「失败」，新增 `SYNTH_CODES.voiceMissing`
+  并把平台原因码留在中文里）；`classifyStatus` 认不出没有平台码的错误（中转站回
+  `{"error":{"message":"invalid api key"}}`，于是坏 key 既不显示也不进 `REFUSALS`，
+  会拿着同一把坏 key 把剩下每句都试一遍）；选了「中转站」形状却没填地址会「探通」一个
+  根本发不出声的官方地址（404 在 `probeShape` 里算「地址活着」，那是给中转站地址定的规矩），
+  现在直接报 `no_host` 并说清缺哪一格。
+- **新增 `src/host/minimax/peak.ts`**：中转站回来的电平明显偏小（实测峰值 6231/32768），
+  所以**只对明确偏轻的材料**（峰值 < 0.5）放大到 0.99，本来够响的原样返回。
+- **静音点了就闭嘴**（用户报的）：原先静音只被两道「下一次」的门读（排下一段 / 合成前），
+  **已经排进 WebAudio 时间轴的照播不误** —— 听感就是「等她念完这句」。现在 `applyMuteNow()`
+  做三件事：增益归零（对已在播的源一样有效）、停掉已排的源并清游标、给整机 iframe 推一条
+  空 id 的 `ttsStop`（既有协议里「停全部」的写法）。解静音按当前音量重算，不是简单置 1。
+  **没有** `suspend()` AudioContext —— 那要等一次 `resume`，而 `resume` 需要用户手势，
+  静音一次反而把声音永久弄哑。触发点接在设置表单的 `subscribe` 上（只转发**真正变了**的字段，
+  且首次不发通知 —— 页面刚打开、她正在念开场白时把声音掐掉是最招人骂的那种「修复」）。
+- **工具条的静音键从来没接上音频链路**（用户第二次报的）：它只改了一个组件内 `useState`
+  （只喂给按钮标签、透明度、语气词判断），而真正拦声音的是设置里的 `voiceMuted`。
+  现在这个键写的是同一个真闸门，并做双向镜像（设置页改的、整机 iframe 改的，工具条都跟着变）。
+  `applyMuteNow()` 另记两条诊断（`minimaxMuteAppliedAt` / `minimaxGainNow`），
+  把「调用压根没发生」与「调用了但听不见」分开。
+- **语音工具条吸顶**：那四个键原来长在会话流里，上下文一长就滚上去（想关语音得先翻到最上面）。
+  现在 `position: sticky` + 一层不透明底板 + `zIndex`。底板取 DSH 的 base 令牌、**不用
+  `backdrop-filter`**：后者在这个壳里会强制新建合成层，滚动时和主题的背景图抢绘制（会抖）。
+- **每一帧 tts 都在抛 `ReferenceError`**：`rememberSpokenAudio` / `awaitingSpokenTexts`
+  在 `lib/client.js` 里**两个调用点、零个定义** —— 是 0.1.8 拆 region 时漏的一行 import
+  （对照 0.1.7 产物：这个标识符从 3 次出现变 2 次）。症状是任何引擎的语音「点了没反应」，
+  而且**连诊断标记都不留**（抛在 `markMinimax("minimaxAudioPlays", …)` 之前）。
+- **新增四条测试**：`scripts/test-client-bundle-bindings.mjs`（issue #14 点名要的
+  「打包产物级」判据：定义方必须 `export`、使用方必须 `import`、产物里必须有定义；
+  摘掉那行 import 当场红 2 条）、`test-minimax-endpoint.mjs`、
+  `test-minimax-relay-config.mjs`（假中转站 + 宿主真实装配的配置矩阵，接进 `test:minimax:e2e`）、
+  `test-voice-mute-instant.mjs`。顺手修掉 `test-client-regions` 一直红着的那条
+  （`./opus.js` → `./opus.ts`：`build.mjs` 的 jsToTs 认得，`client-test-hook.mjs` 不认）。
+- **产物重建**：用 `Herta-src`（`build.mjs` 的默认来源）重建了 `lib/client.js`。
+  与仓库里原来那份的差异只有两类：esbuild 的**源路径注释**（原先记的是本机已不存在的
+  `../tools/_herta-src/…`）与上游 i18n 目录里多三条 **MiMo 引擎**的键
+  （`voice.engine.mimo` / `voice.mimoKey` / `voice.mimoKeyDesc`，当前代码里没有调用点）。
+- **验证**：`npm test` 链 **31 组 1544 项全过、0 失败**；`npm run test:integration` 28 项全过。
+- **仍未接 / 仍未决**：`mimo` 合成器仍无调用点；主题 `lib/opening/` 上游授权未决；
+  「黑塔外观」的值存在浏览器 `localStorage`；`theme` / `deviceScene` 两个字段 DSH 侧无消费方；
+  SSE 没有断线重放（回复中途刷新会丢掉已推的帧）。
 
 ### v0.1.9
 
