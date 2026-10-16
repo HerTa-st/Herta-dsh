@@ -40,6 +40,8 @@ export const SYNTH_CODES = Object.freeze({
   unavailable: "unavailable",
   /** 这一档没有密钥（ADR-0006 的契约里有它 —— 原先这张表漏了这一项，codeOf 于是一直返回 undefined）。 */
   no_key: "no_key",
+  /** 这一档要一份参考音（mimo 的音色克隆），而它读不到 —— 与"没密钥"分开报，用户才知道去补哪一样。 */
+  no_reference: "no_reference",
   /** 网络/上游不通。 */
   network: "network",
   /** 上游明确拒绝（配额、鉴权、内容策略……）。 */
@@ -382,21 +384,44 @@ export function createFishAdapter(deps) {
 }
 
 /**
- * mimo：**注册但 `available(): false`**（Q6）。判断链其实已经存在 ——
- * `mimo-tts.js` 本身就是一份 SpeechSynthesizer 实现（Q24 直接注册），
- * 接线时把这里改成 `synthesizer.available()` 即可，一个返回值的事。
+ * mimo：**真的接上了**（2026-10-11）。
  *
- * @param {{synthesizer: object}} deps
+ * `mimo-tts.js` 本身就是一份 SpeechSynthesizer 实现（Q24）—— 这里只做转接：
+ * 可用性问它、合成问它、取消转发给它；它返回 null（没 key / 没参考音 / 被拒）时，
+ * 把它的 `status().lastFailure` 归成 code（Q13），原文留在 status 里。
+ *
+ * @param {{synthesizer: object|null}} deps
  */
 export function createMimoAdapter(deps) {
   const { synthesizer } = deps;
+  // 这一档"用不了"只有两种真原因，分开报 —— 面板上说得出该去补哪一样。
+  const whyNow = () => {
+    if (synthesizer === null) return SYNTH_CODES.notWired;
+    const st = safeStatus(synthesizer);
+    if (st.keySet === false) return SYNTH_CODES.no_key;
+    if (st.referenceReady === false) return SYNTH_CODES.no_reference;
+    return SYNTH_CODES.unavailable;
+  };
   return {
     name: "mimo",
-    available: () => false,
-    async synthesize() {
-      return synthFail("mimo", SYNTH_CODES.notWired);
+    available: () => synthesizer !== null && synthesizer.available() === true,
+    unavailableCode: whyNow,
+    async synthesize(req) {
+      if (synthesizer === null) return synthFail("mimo", SYNTH_CODES.notWired);
+      try {
+        const r = await synthesizer.synthesize(req);
+        if (r === null || r === undefined) {
+          const st = safeStatus(synthesizer);
+          const reason = st.lastFailure ?? st.refusal ?? null;
+          return synthFail("mimo", reason === null ? whyNow() : codeOf(reason));
+        }
+        return synthOk("mimo", r);
+      } catch (err) {
+        return synthFail("mimo", codeOf(String(err?.message ?? err)));
+      }
     },
-    status: () => ({ wired: false, synthesizer: safeStatus(synthesizer) }),
+    cancel: (utteranceId) => synthesizer?.cancel?.(utteranceId),
+    status: () => ({ wired: synthesizer !== null, ...safeStatus(synthesizer) }),
   };
 }
 

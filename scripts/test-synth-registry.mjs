@@ -224,5 +224,57 @@ eq("minimax：成功时带音频", (await minimaxOk.synthesize(req)).audio?.tag,
   eq("Q9 fish 刻意没有 cancel（一次性 fetch，没接 signal）", fishReal.cancel, undefined);
 }
 
+// ── mimo：2026-10-11 接线之后的行为（Q6 从「注册但不可用」变成真转接）─────
+{
+  // 没构造起来（宿主异常）→ 仍报 notWired
+  const bare = createMimoAdapter({ synthesizer: null });
+  eq("mimo：没构造起来 → available 为假", bare.available(), false);
+  eq("mimo：没构造起来 → code = notWired", (await bare.synthesize(req)).code, SYNTH_CODES.notWired);
+
+  // 缺参考音 → no_reference；缺密钥 → no_key。**分开报**，用户才知道去补哪一样。
+  const noRef = createMimoAdapter({
+    synthesizer: {
+      available: () => false,
+      synthesize: async () => null,
+      status: () => ({ keySet: true, referenceReady: false, lastFailure: null, refusal: null }),
+    },
+  });
+  eq("mimo：缺参考音 → available 为假", noRef.available(), false);
+  eq("mimo：缺参考音 → code = no_reference", (await noRef.synthesize(req)).code, SYNTH_CODES.no_reference);
+
+  const noKey = createMimoAdapter({
+    synthesizer: {
+      available: () => false,
+      synthesize: async () => null,
+      status: () => ({ keySet: false, referenceReady: true, lastFailure: null, refusal: null }),
+    },
+  });
+  eq("mimo：缺密钥 → code = no_key", (await noKey.synthesize(req)).code, SYNTH_CODES.no_key);
+
+  // 两样齐了 → available 真，且音频原样带回来
+  const ok = createMimoAdapter({
+    synthesizer: {
+      available: () => true,
+      synthesize: async () => audio("mimo"),
+      status: () => ({ keySet: true, referenceReady: true, lastFailure: null, refusal: null }),
+    },
+  });
+  eq("mimo：两样齐了 → available 为真", ok.available(), true);
+  eq("mimo：成功时带音频", (await ok.synthesize(req)).audio?.tag, "mimo");
+
+  // 取消要转发下去（router 的 cancel 走 adapter.cancel）
+  let cancelledId = null;
+  const cancellable = createMimoAdapter({
+    synthesizer: {
+      available: () => true,
+      synthesize: async () => null,
+      cancel: (id) => { cancelledId = id; },
+      status: () => ({}),
+    },
+  });
+  cancellable.cancel?.("u-1");
+  eq("mimo：cancel 转发给 synthesizer", cancelledId, "u-1");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

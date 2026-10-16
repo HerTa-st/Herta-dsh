@@ -43,7 +43,15 @@ import { appendFileSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { readJsonBody, sendJson } from "./http-json.js";
-import { decodeWavToPcm16 } from "./mimo-tts.js";
+import {
+  createMimoSynthesizer,
+  decodeWavToPcm16,
+  normalizeReferenceWav,
+  readMimoKey,
+  readMimoKeyFromEnv,
+  readReferenceWav,
+  resolveReferencePath,
+} from "./mimo-tts.js";
 import {
   createEventBus,
   createSpeechPipeline,
@@ -93,7 +101,7 @@ const FISH_KEY_REF = "FISH_API_KEY";
  * （用户决策：保留全部档位 + 逐档标注），所以"选了没声音"必须当场有解释 ——
  * 否则它与"密钥没填"、"模型没下"在界面上长得一模一样。
  */
-const MIMO_NOT_WIRED = "MiMo 合成器尚未接线（mimo-tts.js 还没有调用点），不会发声";
+const MIMO_NOT_WIRED = "MiMo 合成器没有构造起来（宿主侧异常），不会发声";
 
 /**
  * 「试听」的固定台词 —— **用户定的原话**（2026-09-28："有事吗？没事我就走了"）。
@@ -398,6 +406,29 @@ function ensureShared(ctx) {
   /** fish 的密钥在不在（Q18：`available()` 只看这个，不测网络）。由 synthUnit 刷新。 */
   let fishKeyPresent = false;
 
+  /**
+   * mimo 的参考音：读一次就缓存。
+   *
+   * 为什么要缓存：`readReferenceWav()` 要读上游那份 174 秒的参考音，而它是**每次合成**
+   * 都会被问一次的（`available()` 与 `synthesize()` 都问）。读不到就记成 null，
+   * 不再反复碰磁盘 —— 那正是 "no_reference" 这个 code 存在的意义。
+   */
+  let mimoReference = null;
+  let mimoReferenceTried = false;
+  const mimoReferenceBytes = () => {
+    if (!mimoReferenceTried) {
+      mimoReferenceTried = true;
+      try {
+        const raw = readReferenceWav(resolveReferencePath());
+        // 归一化成 24kHz 单声道 —— 实测 48kHz 会被服务端拒（400），
+        // 用户不会知道这件事，所以这一层替他做掉。
+        mimoReference = raw === null || raw === undefined ? null : normalizeReferenceWav(raw);
+      } catch {
+        mimoReference = null;
+      }
+    }
+    return mimoReference;
+  };
   const synthRouter = createSynthRouter({
     engineOf: () => mini.engineOf(),
     noteState: () => mini?.noteState?.(),
@@ -422,7 +453,18 @@ function ensureShared(ctx) {
       // mimo：注册但 `available(): false`（Q6）。这里刻意**不构造** synthesizer ——
       // 构造它要一串还没核过的参数（fetch / keyRef / 参考 WAV），而这一档现在
       // 根本不发声，猜一串参数等于埋雷。接线（开放 available）时再传真的。
-      mimo: createMimoAdapter({ synthesizer: null }),
+      // mimo：真的接上（2026-10-11）。参考音**读一次就缓存** —— 那是上游那份 174 秒的
+      // 参考音，每次合成都重读一遍纯属白费 I/O。读不到就保持 null，于是 available() 为假，
+      // adapter 的 unavailableCode() 会报成 no_reference（面板上说得出"缺哪一样"）。
+      mimo: createMimoAdapter({
+        synthesizer: createMimoSynthesizer({
+          fetch: (...args) => fetch(...args),
+          // key 的读法：环境变量 → 本机约定文件（readMimoKey）。baseUrl 仍由 env 决定。
+          keyRef: () => ({ key: readMimoKey(), baseUrl: readMimoKeyFromEnv().baseUrl }),
+          enabled: () => true,
+          reference: mimoReferenceBytes,
+        }),
+      }),
     },
   });
 
@@ -563,6 +605,7 @@ function ensureShared(ctx) {
     const who = { fish: "Fish Audio", minimax: "MiniMax", mimo: "MiMo", local: "本地语音" }[name] ?? "语音";
     const why = {
       [SYNTH_CODES.no_key]: "没有密钥",
+      [SYNTH_CODES.no_reference]: "读不到参考音（mimo 音色克隆要的那份 wav）",
       [SYNTH_CODES.unavailable]: "不可用",
       [SYNTH_CODES.network]: "连不上",
       [SYNTH_CODES.refused]: "被拒绝",
