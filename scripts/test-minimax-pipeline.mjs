@@ -215,13 +215,18 @@ const stopFrames = (bus) => bus.frames.filter((f) => f.kind === "ttsStop");
   check("思考增量不发声", ttsFrames(bus).length === 0);
 }
 
-// ── 7. 引擎分发：local 会念、mimo 不念（2026-09-28 的用户决策）─────────────
-// 这条原来写的是「voiceEngine=local 时不发声」—— 那时 local 只在云端失败时被
-// **回落**调用，选它等于静音。现在 local 直连本地模型，所以整条管线必须照念；
-// 真正"整条静默"的那一档换成了 mimo（合成器尚未接线）。
+// ── 7. 引擎分发：四档都会念（mimo 于 2026-10-11 接线）────────────────────
+// 这一节的沿革值得留：最早写的是「voiceEngine=local 时不发声」—— 那时 local 只在云端
+// 失败时被**回落**调用，选它等于静音；local 直连本地模型之后改成照念；再往后
+// 「整条静默」那一档是 mimo（合成器尚未接线）。**现在四档都会念**，
+// 静默那一档只剩**未知值**（空串 / "gpt" 这种）—— 那才是真正该闭嘴的情况。
 {
   check("speaksFor：local 与 minimax 会出声", speaksFor("local") === true && speaksFor("minimax") === true);
-  check("speaksFor：mimo 与未知值不出声", speaksFor("mimo") === false && speaksFor("") === false && speaksFor("gpt") === false);
+  check(
+    "speaksFor：四档都会出声（含 mimo）",
+    ["local", "minimax", "fish", "mimo"].every((e) => speaksFor(e) === true),
+  );
+  check("speaksFor：未知值不出声", speaksFor("") === false && speaksFor("gpt") === false);
 
   const { pipeline, bus } = makePipeline({ engine: "local" });
   pipeline.onStream({ agent: TOP, frame: frameStart() });
@@ -230,15 +235,26 @@ const stopFrames = (bus) => bus.frames.filter((f) => f.kind === "ttsStop");
   await new Promise((r) => setTimeout(r, 5));
   check("voiceEngine=local 时照常发声", ttsFrames(bus).length === speakableCount(LONG, true));
 
-  const silent = makePipeline({ engine: "mimo" });
-  silent.pipeline.onStream({ agent: TOP, frame: frameStart() });
-  silent.pipeline.onStream({ agent: TOP, frame: frameDelta(LONG) });
-  silent.pipeline.onStream({ agent: TOP, frame: frameEnd() });
+  // 未知值才是静默那一档（见这一节开头的沿革）
+  const unknown = makePipeline({ engine: "gpt" });
+  unknown.pipeline.onStream({ agent: TOP, frame: frameStart() });
+  unknown.pipeline.onStream({ agent: TOP, frame: frameDelta(LONG) });
+  unknown.pipeline.onStream({ agent: TOP, frame: frameEnd() });
   await new Promise((r) => setTimeout(r, 5));
-  check("voiceEngine=mimo 时整条管线静默", ttsFrames(silent.bus).length === 0);
+  check("voiceEngine=未知值 时整条管线静默", ttsFrames(unknown.bus).length === 0);
   check(
     "静默**不**计入 mutedFrames（引擎的选择 ≠ 被 realtimeVoice 关掉）",
-    silent.pipeline.stats().mutedFrames === 0,
+    unknown.pipeline.stats().mutedFrames === 0,
+  );
+
+  const mimo = makePipeline({ engine: "mimo" });
+  mimo.pipeline.onStream({ agent: TOP, frame: frameStart() });
+  mimo.pipeline.onStream({ agent: TOP, frame: frameDelta(LONG) });
+  mimo.pipeline.onStream({ agent: TOP, frame: frameEnd() });
+  await new Promise((r) => setTimeout(r, 5));
+  check(
+    "voiceEngine=mimo 时照常发声（2026-10-11 接线后）",
+    ttsFrames(mimo.bus).length === speakableCount(LONG, true),
   );
 }
 
@@ -299,8 +315,13 @@ const stopFrames = (bus) => bus.frames.filter((f) => f.kind === "ttsStop");
   const { pipeline: localPipe, bus: localBus } = makePipeline({ engine: "local" });
   const localOut = await localPipe.sayText("用本地模型说一句。");
   check("sayText 在 local 引擎下照常合成", localOut !== null && ttsFrames(localBus).length >= 1);
-  const { pipeline: mimoPipe } = makePipeline({ engine: "mimo" });
-  check("sayText 在 mimo 引擎下返回 null（合成器尚未接线）", (await mimoPipe.sayText("喂")) === null);
+  const { pipeline: mimoPipe, bus: mimoBus } = makePipeline({ engine: "mimo" });
+  const mimoOut = await mimoPipe.sayText("再说一句试试。");
+  await new Promise((r) => setTimeout(r, 5));
+  check(
+    "sayText 在 mimo 引擎下不再被拒（2026-10-11 接线后）",
+    mimoOut !== null && ttsFrames(mimoBus).length >= 1,
+  );
 }
 
 // ── 10. 事件总线：接入即握手、广播、断开即移除 ───────────────────────────

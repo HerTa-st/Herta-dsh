@@ -21,10 +21,12 @@ export const VOICE_ENGINES = Object.freeze(["local", "minimax", "fish", "mimo"])
 /**
  * 哪几档**真的会出声** —— 这是行为，不是偏好。
  *
- * `mimo` 不在里面：它的合成器尚未接线（`mimo-tts.js` 在 `synth-registry.js` 里
- * 以一个 `available(): false` 的 adapter 注册着，Q6）。接上它 = 把它挪进这一行。
+ * 四档**全部**在里面（mimo 于 2026-10-11 接线：`mimo-tts.js` 的 synthesizer 由宿主
+ * 构造后交给 `createMimoAdapter`，不再是 `available(): false` 的空壳）。
+ * 它仍然可能"暂时发不出声" —— 缺 key 或缺参考音时 `available()` 为假，理由由
+ * `unavailableCode()` 给（no_key / 参考音缺失），设置页那一行会照实显示。
  */
-export const SPEAKING_ENGINES = Object.freeze(["local", "minimax", "fish"]);
+export const SPEAKING_ENGINES = Object.freeze(["local", "minimax", "fish", "mimo"]);
 
 /**
  * 回落表：这一档失败之后换哪一档；**表里没有的档就是不回落**。
