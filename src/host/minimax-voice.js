@@ -46,8 +46,10 @@ import { readJsonBody, sendJson } from "./http-json.js";
 import {
   createMimoSynthesizer,
   decodeWavToPcm16,
-  readMimoKeyFromEnv,
+  normalizeReferenceWav,
+  readMimoKey,
   readReferenceWav,
+  resolveReferencePath,
 } from "./mimo-tts.js";
 import {
   createEventBus,
@@ -416,7 +418,10 @@ function ensureShared(ctx) {
     if (!mimoReferenceTried) {
       mimoReferenceTried = true;
       try {
-        mimoReference = readReferenceWav() ?? null;
+        const raw = readReferenceWav(resolveReferencePath());
+        // 归一化成 24kHz 单声道 —— 实测 48kHz 会被服务端拒（400），
+        // 用户不会知道这件事，所以这一层替他做掉。
+        mimoReference = raw === null || raw === undefined ? null : normalizeReferenceWav(raw);
       } catch {
         mimoReference = null;
       }
@@ -453,7 +458,8 @@ function ensureShared(ctx) {
       mimo: createMimoAdapter({
         synthesizer: createMimoSynthesizer({
           fetch: (...args) => fetch(...args),
-          keyRef: () => readMimoKeyFromEnv(),
+          // key 的读法：环境变量 → 本机约定文件（readMimoKey）。baseUrl 仍由 env 决定。
+          keyRef: () => ({ key: readMimoKey(), baseUrl: readMimoKeyFromEnv().baseUrl }),
           enabled: () => true,
           reference: mimoReferenceBytes,
         }),

@@ -7,17 +7,7 @@
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  MIMO_DEFAULT_BASE_URL,
-  MimoError,
-  classifyMimoStatus,
-  createMimoSynthesizer,
-  decodeWavToPcm16,
-  readMimoKeyFromEnv,
-  readReferenceWav,
-  referenceFingerprint,
-  synthesizePcm,
-} from "../src/host/mimo-tts.js";
+import { MIMO_DEFAULT_BASE_URL, MimoError, classifyMimoStatus, createMimoSynthesizer, decodeWavToPcm16, normalizeReferenceWav, readMimoKeyFromEnv, readReferenceWav, referenceFingerprint, resolveReferencePath, synthesizePcm } from "../src/host/mimo-tts.js";
 
 let pass = 0;
 let fail = 0;
@@ -105,10 +95,19 @@ check("400 其它 → other", classifyMimoStatus(400, "weird") === "other");
   check("指纹长度", a.length === 16);
 }
 
-// 6. 真实参考 WAV 读取（本机已验证存在）
+// 6. 参考音：路径解析 + 归一化（2026-10-11 起路径不再写死 D:\\Herta）
 {
-  const ref = readReferenceWav();
-  check("真实参考 WAV 读到", ref !== null && ref.length > 1_000_000);
+  const refPath = resolveReferencePath();
+  check("参考音路径解析得到（env → 本机约定 → 上游）", typeof refPath === "string" && refPath.length > 0);
+  const ref = readReferenceWav(refPath);
+  check("真实参考 WAV 读到", ref !== null && ref.length > 100_000, "path=" + refPath);
+  if (ref !== null && ref !== undefined) {
+    const norm = normalizeReferenceWav(ref);
+    check(
+      "归一化成 24kHz 单声道（少了这一层，服务端会 400）",
+      norm !== null && norm.length > 0 && norm.length <= ref.length + 64,
+    );
+  }
 }
 
 // 7. synthesizePcm：mock fetch 成功路径
@@ -119,7 +118,10 @@ check("400 其它 → other", classifyMimoStatus(400, "weird") === "other");
     check("请求 URL 是 /chat/completions", url.endsWith("/chat/completions"));
     const body = JSON.parse(init.body);
     check("请求 model 是 voiceclone", body.model === "mimo-v2.5-tts-voiceclone");
-    check("请求带 audio.voice (base64)", typeof body.audio.voice === "string" && body.audio.voice.length > 0);
+    check(
+  "请求带 audio.voice（DataURL 形状 —— 裸 base64 会被服务端 400 拒）",
+  typeof body.audio.voice === "string" && body.audio.voice.startsWith("data:audio/wav;base64,"),
+);
     check("请求带 Bearer auth", init.headers.Authorization.startsWith("Bearer "));
     return {
       ok: true,
