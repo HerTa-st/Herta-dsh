@@ -8,7 +8,7 @@
  * 但裸 Node 加载它们会停在三个包上：
  *
  * - `react` / `react-dom/client` —— 仓库刻意不带 node_modules
- * - `@gui/*` —— 上游 Herta 的整机组件与样式，住在 Herta-src
+ * - `@gui/*` —— 上游 Herta 的展示组件与样式，住在 Herta-src
  *
  * 这个 hook 把这三类指到 `scripts/test-stubs/` 下的最小桩。**不是生产路径**：
  * DSH 真正加载插件时走的是 esbuild 打好的 `lib/client.js`。

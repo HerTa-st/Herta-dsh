@@ -1,7 +1,7 @@
 /**
  * 两条插件自带端点共用的 JSON 收发小工具。
  *
- * 抽出来的理由很实际：`/herta-settings` 与 `/herta-voice-model` 都要做同样的
+ * 抽出来的理由很实际：`/herta-voice-model` 与 `/herta-minimax-state` 都要做同样的
  * 三件事 —— 发 JSON、按上限收请求体、把坏 JSON 变成 400 —— 而这三件事写两遍
  * 就会有两套边界行为（其中一套迟早漏掉上限）。
  */

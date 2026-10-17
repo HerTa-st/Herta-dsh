@@ -7,20 +7,7 @@
  * 从 `index.tsx` 原样搬来（含 machineForm 那个模块级状态与 MachineForm 接口）：只改了所在文件、export，
  * 以及给装配层补了一个显式入口 `bindMachineForm` —— 行为没动。
  */
-import { createRoot, type Root } from "react-dom/client";
-import { fullSnapshot, nodesToRecord, toBubbles } from "../shared/mapping.js";
-import {
-  buildRealtimeVoiceState,
-  isVoiceEngine,
-  normalizeVoiceSettings,
-} from "../host/voice-settings-shared.js";
-import {
-  FIELDS,
-  normalizeSettings,
-  SETTINGS_GROUPS,
-  SETTINGS_NAMESPACE,
-  UNWIRED_FIELD_NAMES,
-} from "../host/settings-schema.js";
+import { normalizeSettings } from "../host/settings-schema.js";
 export interface MachineForm {
   getSnapshot(): {
     status: "loading" | "ready" | "unavailable";
@@ -41,7 +28,7 @@ export interface MachineForm {
  */
 export let machineForm: MachineForm | null = null;
 
-/** 设置值快照（永远完整：非法/缺失一律回落默认），供 iframe 的应答器同步读。 */
+/** 设置值快照（永远完整：非法/缺失一律回落默认），供设置页与语音层同步读。 */
 export function machineValues(): Record<string, unknown> {
   return normalizeSettings(machineForm?.getSnapshot().value);
 }
@@ -72,8 +59,8 @@ export async function writeMachineField(field: string, value: unknown): Promise<
 /**
  * 读一个设置字段的当前值（已归一）。
  *
- * iframe 的应答器要用它 —— 那里是**同步**应答（`getLocale` 这类不能 await HTTP），
- * 所以只能读客户端手上的这份快照。
+ * 客户端里所有同步读取（试听前的静音判断、工具条的标签这类）都读这份快照 ——
+ * 表单快照是同步的，不用等 HTTP。
  */
 export function machineField(field: string): unknown {
   return machineValues()[field];
@@ -275,8 +262,8 @@ export async function clearCredential(ref: string): Promise<string | null> {
  *
  * ## 顺带接上表单的变更通知（2026-10-10）
  *
- * `MachineForm` 本来就有 `subscribe` —— 设置一变（**不管是在设置页改的，还是在整机
- * iframe 里改的**）这里都会响一次。以前没人监听它，于是"静音"这类字段只会在
+ * `MachineForm` 本来就有 `subscribe` —— 设置一变（**不管是在 DSH 设置页改的，
+ * 还是插件内部写入的**）这里都会响一次。以前没人监听它，于是"静音"这类字段只会在
  * **下一次**合成/调度时才被读到，听感就是「她念完当前这句才停」。
  *
  * 这一层不认识「静音」是什么（那是语音层的事），所以只把人叫起来、把新值交出去；

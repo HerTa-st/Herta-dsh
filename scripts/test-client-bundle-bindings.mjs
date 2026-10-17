@@ -107,6 +107,14 @@ for (const name of ["rememberSpokenAudio", "awaitingSpokenTexts"]) {
   }
   check("没有「被用到、却没有定义」的客户端符号", suspects.length === 0);
   if (suspects.length > 0) console.error(`      未绑定：${suspects.join(", ")}`);
+
+  // 常量同样要成对：2026-10-17 查出 `VOICE_MODEL_URL` 只有调用点、没有定义。
+  // 它的调用都在 `refreshVoiceModel` / `postVoiceModel` 的 try/catch 里，ReferenceError
+  // 被吞掉 → 设置页「本地语音模型」永远显示未安装、下载按钮点了没反应。
+  check(
+    "VOICE_MODEL_URL 在产物里既有定义也有调用",
+    /(?:function|var|let|const)\s+VOICE_MODEL_URL\b/.test(bundle) && /fetch\(VOICE_MODEL_URL/.test(bundle),
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

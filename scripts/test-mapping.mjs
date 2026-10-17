@@ -6,7 +6,7 @@
  *
  * 用法：node scripts/test-mapping.mjs
  */
-import { fullSnapshot, isoOf, nodesToRecord, textOf, toBubbles } from "../src/shared/mapping.js";
+import { isoOf, textOf, toBubbles } from "../src/shared/mapping.js";
 
 let pass = 0;
 let fail = 0;
@@ -32,7 +32,7 @@ console.log("\n=== 时间戳 ===");
 ok(isoOf(AT)?.startsWith("2026-") === true, "数字 → ISO", String(isoOf(AT)));
 ok(isoOf(undefined) === undefined && isoOf("x") === undefined, "非数字 → undefined（她的气泡会隐藏时间而不是伪造）");
 
-console.log("\n=== 乙：节点 → 气泡 ===");
+console.log("\n=== 节点 → 气泡 ===");
 {
   const r = toBubbles([
     { kind: "user", seq: 1, time: AT, content: [{ type: "text", text: "你好" }] },
@@ -58,7 +58,7 @@ console.log("\n=== 乙：节点 → 气泡 ===");
   ok(r.voiceCues.length === 0, "没有发声工具结果时不产出 cue");
 }
 
-console.log("\n=== 乙：herta_speak 的 cue 抽取 ===");
+console.log("\n=== herta_speak 的 cue 抽取 ===");
 {
   const r = toBubbles([
     {
@@ -77,61 +77,10 @@ console.log("\n=== 乙：herta_speak 的 cue 抽取 ===");
   ok(r.dropped.total === 3, "工具结果仍如实计入 dropped（它们不成气泡）", String(r.dropped.total));
 }
 
-console.log("\n=== 甲：节点 → 她的 TerminalRecord ===");
-{
-  const record = nodesToRecord([
-    { kind: "user", seq: 1, time: AT, content: [{ type: "text", text: "你好" }] },
-    { kind: "assistant", seq: 2, time: AT, blocks: [{ kind: "reasoning", text: "想" }, { kind: "text", text: "答复" }] },
-    { kind: "tool-result", seq: 3, time: AT, call: { name: "read" }, isError: false },
-    { kind: "tool-result", seq: 4, time: AT, call: { name: "pwsh" }, isError: true },
-    { kind: "turn-error", seq: 5, time: AT, message: "没有 API Key" },
-    { kind: "compaction", seq: 6, time: AT },
-    { kind: "context", seq: 7, time: AT },
-    { kind: "command", seq: 8, time: AT },
-  ]);
-  const kinds = record.map((b) => b.kind).join(",");
-  ok(kinds === "user,herta,system,system,system,system", "块序列正确", kinds);
-  ok(record[1].surface === "speech", "助手正文是 speech surface");
-  ok(!JSON.stringify(record).includes("想"), "reasoning 没有进记录");
-  ok(record[2].body === "read 已返回" && record[3].body === "pwsh 失败", "工具成功/失败措辞不同");
-  ok(record[4].body === "没有 API Key", "turn-error 的原话进了 system 块");
-  ok(record[0].label === undefined, "user 块没有 label 字段");
-  ok(record[2].label === "系统", "system 块的 label 是「系统」");
-  ok(nodesToRecord([{ kind: "context" }]).length === 0, "只有 context 时记录为空");
-}
-
-console.log("\n=== 甲：思考围栏必须被剥掉（2026-09-19 用户报的真 bug）===");
+console.log("\n=== 思考围栏必须被剥掉（2026-09-19 用户报的真 bug）===");
 {
   // 她按原版语法把内心话写在 （我 想） 里、发言写在 （我 说） 里。
-  // 不剥的话整段思考会被当成她的发言发到整机页面上 —— 实际发生过。
-  const withFences = [
-    { kind: "user", text: "你好" },
-    {
-      kind: "assistant",
-      blocks: [
-        {
-          kind: "text",
-          text: "（我 想）我不能把编的细节说成真的。（/我 想）（我 说）我说错了。（/我 说）",
-        },
-      ],
-    },
-  ];
-  const rec = nodesToRecord(withFences);
-  const herta = rec.filter((b) => b.kind === "herta");
-  ok(herta.length === 1, "还是只有一条她的块");
-  ok(herta[0].text === "我说错了。", "只保留说话部分", JSON.stringify(herta[0].text));
-  ok(!herta[0].text.includes("（我 想）"), "思考围栏没有进记录");
-  ok(!herta[0].text.includes("不能把编的细节"), "**思考内容没有被当成发言**");
-  ok(herta[0].surface === "speech", "标记为 speech 表面");
-
-  // 只有思考、没有说话 → 不该出现在记录里，但要对得上账
-  const onlyThought = nodesToRecord([
-    { kind: "assistant", blocks: [{ kind: "text", text: "（我 想）只想不说。（/我 想）" }] },
-  ]);
-  ok(onlyThought.length === 0, "只有思考的节点不进记录（不能当发言）");
-}
-{
-  // 乙方案（toBubbles）同样要剥
+  // 不剥的话整段思考会被当成她的发言显示出来 —— 实际发生过。
   const r = toBubbles([
     {
       kind: "assistant",
@@ -140,29 +89,16 @@ console.log("\n=== 甲：思考围栏必须被剥掉（2026-09-19 用户报的�
       blocks: [{ kind: "text", text: "（我 想）内心话（/我 想）（我 说）说出口的。（/我 说）" }],
     },
   ]);
-  ok(r.bubbles.length === 1, "乙：一条气泡");
-  ok(r.bubbles[0].text === "说出口的。", "乙：只保留说话部分", JSON.stringify(r.bubbles[0].text));
-  ok(!r.bubbles[0].text.includes("内心话"), "乙：思考内容没有进气泡");
+  ok(r.bubbles.length === 1, "一条气泡");
+  ok(r.bubbles[0].text === "说出口的。", "只保留说话部分", JSON.stringify(r.bubbles[0].text));
+  ok(!r.bubbles[0].text.includes("内心话"), "思考内容没有进气泡");
 }
 {
   // 她没写围栏时（早期对话 / 没按语法来）→ 整段当说话，不吞内容
-  const rec = nodesToRecord([
-    { kind: "assistant", blocks: [{ kind: "text", text: "没写围栏的一句话。" }] },
+  const r = toBubbles([
+    { kind: "assistant", seq: 1, time: AT, blocks: [{ kind: "text", text: "没写围栏的一句话。" }] },
   ]);
-  ok(rec.length === 1 && rec[0].text === "没写围栏的一句话。", "没有围栏时整段都是说话（不吞内容）");
-}
-
-console.log("\n=== 甲：SessionSnapshot ===");
-{
-  const s = fullSnapshot("session-abc", [{ kind: "user", text: "x" }]);
-  ok(s.sessionId === "session-abc", "sessionId 透传");
-  ok(typeof s.workspaceRoot === "string" && s.workspaceRoot !== "", "workspaceRoot 非空（空串时她的界面不渲染正文）");
-  ok(s.overlay === null, "overlay 是 null（不是 {kind:'idle'}）");
-  ok(!("recordStart" in s), "不给 recordStart（她的 store 自己按窗口算）");
-  ok(s.lang === "zh" && s.backendWorkspaceIsDefault === true, "语言与工作区标记正确");
-
-  const empty = fullSnapshot(undefined, []);
-  ok(empty.sessionId === "" && empty.workspaceRoot.includes("current"), "sessionId 缺失时仍有非空 workspaceRoot");
+  ok(r.bubbles.length === 1 && r.bubbles[0].text === "没写围栏的一句话。", "没有围栏时整段都是说话（不吞内容）");
 }
 
 console.log(`\n=== 结果：${pass} 通过 / ${fail} 失败 ===`);

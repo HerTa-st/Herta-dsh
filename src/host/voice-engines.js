@@ -5,12 +5,10 @@
  *
  * 有**两边**的模块要取它，而两边的体质要求不同：
  *   · **宿主**：`settings-schema.js`（自称纯数据、无 import）、`minimax/pipeline.ts`
- *     （`speaksFor` 判"会不会出声"）、`synth-registry.js`（回落规则的内容）；
- *   · **客户端**：`voice-settings-shared.js` 会被 esbuild 打进 client bundle
- *     （`src/client/index.tsx` 用它归一化拿回来的引擎值）。
+ *     （`speaksFor` 判"会不会出声"）、`synth-registry.js`（回落规则的内容）。
  *
  * 所以这里**只有常量**：没有 IO、没有依赖、没有副作用 —— 谁 import 它都不会被拖进
- * 多余的东西（尤其是别把 641 行的字段表拖进客户端包）。
+ * 多余的东西（尤其是别把字段表拖进客户端包）。
  *
  * 加一档时**只动这里** + 写一个 adapter 工厂；别再在第四个文件里抄第二遍。
  */

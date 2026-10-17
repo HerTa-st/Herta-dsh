@@ -142,7 +142,6 @@ for (const [label, p] of [
   ["profile 目录", PROFILE_DIR],
   ["profile package.json", join(PROFILE_DIR, "package.json")],
   ["插件包", join(root, "lib", "client.js")],
-  ["整机页面", join(root, "lib", "herta-ui", "index.html")],
   ["语音资产", join(root, "assets", "voice")],
   ["TTS 运行时", join(root, "assets", "tts-runtime", "sherpa-onnx-node", "sherpa-onnx.js")],
   ["preset 补丁层", join(root, "preset", "herta.patch.yml")],
@@ -153,7 +152,7 @@ for (const [label, p] of [
 }
 
 const pluginSize = dirSize(join(root, "lib")) + dirSize(join(root, "assets"));
-say(`  插件体积：${bytes(pluginSize)}（其中整机页面 ${bytes(dirSize(join(root, "lib", "herta-ui")))}）`);
+say(`  插件体积：${bytes(pluginSize)}`);
 
 const before = JSON.parse(readFileSync(join(PROFILE_DIR, "package.json"), "utf8"));
 say(`  目标 profile 现有 bundles：${(before.dsh?.profile?.bundles ?? []).join(", ")}`);
@@ -264,7 +263,7 @@ const hertaRows = (dump.match(/^- id: herta$/gm) ?? []).length;
 say(`  ✅ dump-config exit 0`);
 say(`  herta 行数量：${hertaRows}${hertaRows === 1 ? "" : "  ❌ 应当是 1"}`);
 if (hertaRows !== 1) throw new Error("herta 行不是恰好一条 —— 疑似重复条目，回滚：node scripts/install-web.mjs --rollback");
-// preset 补丁层必须真的进了合成结果（它是「黑塔」这个 preset 的唯一来源）
+// preset 补丁层必须真的进了合成结果（它是「Herta」这个 preset 的唯一来源）
 if (!dump.includes("preset-herta") || !dump.includes("plane: preset")) {
   throw new Error("配置里没有 preset-herta / plane: preset —— bundle patch 数组没生效，回滚：node scripts/install-web.mjs --rollback");
 }
@@ -289,9 +288,9 @@ console.log(`
 界面会变哑。
 
 重开后验证：
-  1. 新建会话 → 页签里应出现「黑塔」与「黑塔·整机」
-  2. General 设置里的 Agent preset 应出现「黑塔」
-  3. 让她的会话跑一轮后，工具表里应有 5 个 herta_*（需要 API Key）
+  1. 新建会话 → 页签里应出现「Herta」
+  2. General 设置里的 Agent preset 应出现「Herta」
+  3. 让她的会话跑一轮后，工具表里应有 7 个 herta_*（需要 API Key）
 
 出问题就回滚：
   node "${join(here, "install-web.mjs")}" --rollback

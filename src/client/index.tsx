@@ -19,39 +19,11 @@
  *
  * 样式仍然关在 shadow root 里，理由见 scripts/build.mjs 的 CSS 转换说明。
  */
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { HertaBubble } from "@gui/components/Workspace/HertaBubble";
-import { UserBubble } from "@gui/components/Workspace/UserBubble";
-import { LocaleProvider } from "@gui/i18n/LocaleProvider";
-import hertaCss from "@gui/styles/reference-ux.css";
-// 两个方向的映射都在共享模块里（纯函数，Node 里可直接单测：
-// scripts/test-mapping.mjs）。客户端只负责订阅与渲染。
-import { fullSnapshot, nodesToRecord, toBubbles } from "../shared/mapping.js";
-// 语音偏好：默认值、归一化、iframe 要的 RealtimeVoiceState 都由这个纯模块给出
-// —— 与宿主侧 `src/host/voice-settings.js` 共用同一份，而它无 import，
-// 所以既能 Node 单测，也能被 esbuild 打进这份 bundle。
-import {
-  buildRealtimeVoiceState,
-  isVoiceEngine,
-  normalizeVoiceSettings,
-} from "../host/voice-settings-shared.js";
-// 设置字段表：与宿主**同一份**（无 import 的纯数据模块，esbuild 直接内联）。
-// 页面的标签、枚举选项、默认值、「哪些字段整机真的会读」、**展示元数据**
-// （分组归属 / 枚举中文 / 行内提示 / 引擎行逐档文案）全部从它读 ——
-// 客户端不再自持第二份字段清单或展示表（2026-10-03 收编，原先散着六张）。
-import {
-  FIELDS,
-  normalizeSettings,
-  SETTINGS_GROUPS,
-  SETTINGS_NAMESPACE,
-  UNWIRED_FIELD_NAMES,
-} from "../host/settings-schema.js";
-// MiniMax 语音的两件纯逻辑：base64 → Int16 PCM 的解码，与按 utteranceId/seq 交付的
-// 播放队列状态机。**零 import** 是刻意的 —— 它能被 Node 直接单测
-// （`scripts/test-minimax-pcm.mjs`），所以「顺序 / 去重 / 打断 / 停止」这些最容易
-// 写错的地方不靠浏览器验证。
-import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
+// 本文件不再直接渲染气泡或持有字段表：设置页在 `settings.ts`、视图与面板在
+// `ui.ts`、语音在 `voice.ts`，字段表与宿主共用 `../host/settings-schema.js`。
+// 这里只留装配需要的东西 —— 2026-10-17 删整机视图之后，原先那串 react/@gui
+// import 已全部没人用（esbuild 本来也会摇掉，留着只会误导）。
+import { SETTINGS_NAMESPACE } from "../host/settings-schema.js";
 
 /** Cordis 插件名，与 cordis.patch.yml 里的 loader 条目 id 一致。 */
 const name = "herta";
@@ -64,9 +36,6 @@ const inject = ["uiConversation", "slots"];
  * 壳会把用户选中的视图偏好按这个 id 持久化，所以改它等于换一个页签。
  */
 const VIEW_ID = "herta";
-
-/** 整机页签的视图 id（甲方案，iframe）。 */
-const FULL_VIEW_ID = "herta-full";
 
 /**
  * 设置命名空间 = 宿主那条 profile 条目的 id。
@@ -85,16 +54,7 @@ const MACHINE_NS = SETTINGS_NAMESPACE;
 // 「机器」那一层（设置表单 / 凭据服务 / 机器字段）已拆到独立文件（#2 第一步）。
 import {
   bindMachineForm,
-  clearCredential,
-  credentialStatus,
-  credentialsRemote,
-  machineField,
-  machineForm,
-  machineValues,
-  resolveCredentials,
-  saveCredential,
   setFormValueListener,
-  subscribeCredentials,
   watchCredentials,
   writeMachineField,
   type MachineForm,
@@ -102,58 +62,18 @@ import {
 
 
 /**
- * 语音偏好的读写口 —— iframe 那边的语音应答器读它。
- *
- * **对外形状刻意保持不变**（`{getSnapshot().value, set(field, value)}`）。
- *
- * 0.1.7-rc.2 起背后是 DSH 的设置表单（`ctx.configForms.get("herta")`）：
- * 同一个命名空间既喂这些应答器、也喂 DSH 自己设置页里的「黑塔」一页，
- * 而且写入会落进 profile 的 `cordis.patch.yml`。
+ * 设置命名空间与 DSH 设置页共享同一份表单：写入落进 profile 的
+ * `cordis.patch.yml`，设置页与插件内的读取方永远同值。
  */
-const voiceScope = {
-  getSnapshot(): { value?: unknown } {
-    const values = machineValues();
-    return { value: { engine: values.voiceEngine, realtimeVoice: values.realtimeVoice } };
-  },
-  async set(field: string, value: unknown): Promise<void> {
-    // 字段名在这里翻译一次：bridge 的契约叫 `engine`，DSH 的字段叫 `voiceEngine`。
-    const name = field === "engine" ? "voiceEngine" : field;
-    await writeMachineField(name, value);
-  },
-};
 
 /**
- * 本地语音模型（离线 TTS）状态 —— 宿主 `/herta-voice-model` 的镜像。
- *
- * 为什么要有本地镜像 + 轮询，而不是每次现问：
- *   · 整机 iframe 的 `getRealtimeVoice` 是**同步应答**的（它读 `RealtimeVoiceState`
- *     里的 `model` 字段），不能在里面 await 一次 HTTP
- *   · 下载要显示进度，而进度只能靠轮询拿（宿主是 GET 状态 / POST 动作的形态）
- *
- * 轮询**只在 `downloading` 时开**：平时一个定时器都不留，下载一结束就清掉。
+ * 本地语音模型（离线 TTS）状态页面在设置页里读 —— 宿主侧 `/herta-voice-model`
+ * 的镜像由 `voice.ts` 维护；本文件不再持有 iframe 那条同步应答的缓存。
  */
-const VOICE_MODEL_URL = "/herta-voice-model";
-
-/** 当前状态；null = 还没问过宿主。 */
 // 「语音」那一层（SSE / PCM / 播放 / 音色状态）已拆到独立文件（#2 第二步）。
 import {
   applyMuteNow,
-  stopVoiceModelTimer,
-  localQueue,
-  miniMaxErrorText,
-  miniMaxRetryText,
-  miniMaxState,
-  playLocalVoice,
-  postMiniMaxAction,
-  postVoiceModel,
-  refreshVoiceModel,
-  registerVoiceSink,
   startMiniMaxStream,
-  subscribeMiniMax,
-  voiceModelFacts,
-  voiceModelState,
-  voiceModelSubs,
-  voiceModelTimer,
 } from "./voice.js";
 
 
@@ -161,16 +81,15 @@ import {
 /** DSH 把生效主题写在 documentElement 的 inline colorScheme 上（ui-theme/boot-theme.ts:19）。 */
 // 「界面」那一层（面板 / 视图 / 气泡 / 点击朗读）已拆到独立文件（#2 第三步）。
 import {
-  HertaFullView,
   HertaView,
   notifyMuteChanged,
 } from "./ui.js";
 
 
-// ── 设置页：「黑塔」（`settings.section` 的独立一页）──────────────────────────
+// ── 设置页：「Herta」（`settings.section` 的独立一页）──────────────────────────
 //
 // 为什么是独立一页而不是靠 schema 自动生成：
-//   · 这一页有 14 项、分四组，自动表单一长条读不动；
+//   · 这一页有十几项、分几组，自动表单一长条读不动；
 //   · 枚举项（语言、主题、引擎、模型）要的是分段选择器，不是文本框；
 //   · 「工作区」那组还要说明「留空 = 不同步」，那是文案不是 schema 能表达的。
 // 宿主侧因此声明了 `configure({auto:false})`（与所有官方自带页插件一致），
@@ -199,7 +118,7 @@ import {
 
 
 /**
- * 绑定设置表单并挂上「黑塔」设置页。
+ * 绑定设置表单并挂上「Herta」设置页。
  *
  * 三件事都是**惰性**的，这是有意的：
  *   · `ctx.inject(["configForms","slots"], …)` 而不是写进 `inject` 数组 ——
@@ -245,10 +164,10 @@ function installSettingsSection(
     // （见 `onFormChanged`），所以动别的设置不会误掐她正在念的那一句。
     setFormValueListener((changed) => {
       if (!changed.includes("voiceMuted")) return;
-      // ① 立刻闭嘴：增益归零 + 停掉已排的源 + 让整机 iframe 也停。
+      // ① 立刻闭嘴：增益归零 + 停掉已排的源。
       applyMuteNow();
       // ② 工具条那个按钮只是**镜像**（真相在设置里），得让它把标签换过来 ——
-      //    设置页改的、iframe 那两个按钮改的、宿主回写的，都要同步。
+      //    设置页改的、宿主回写的，都要同步。
       notifyMuteChanged();
     });
     // 表单绑定那一刻先对一次：静音**本来就是开着的**时，增益也该当场归零
@@ -281,7 +200,7 @@ function installSettingsSection(
               id: MACHINE_NS,
               // account(-10) / general(0) / models(10) / plugins(15) / agent-presets(20)
               order: 30,
-              label: () => "黑塔",
+              label: () => "Herta",
               inject: () => ({
                 hooks: { hertaMachine: form },
                 setHertaField: (field: string, value: unknown) => {
@@ -334,13 +253,13 @@ function apply(ctx: {
   };
   (globalThis as Record<string, unknown>).__DSH_HERTA__ = mark;
 
-  // 设置：绑定 DSH 的设置表单 + 在设置里挂上「黑塔」一页。
-  // `voiceScope` 也从这一份表单读，所以整机面板与 DSH 设置页永远同值。
+  // 设置：绑定 DSH 的设置表单 + 在设置里挂上「Herta」一页。
+  // 语音层与设置页读的是同一份表单，所以两处永远同值。
   installSettingsSection(ctx, mark);
 
   // MiniMax 的 PCM 流：**插件级订阅**，不是某个视图里的订阅。
   //
-  // 理由：声音该在用户停在任何页签时都响。挂在整机视图里的话，切走页签就哑了 ——
+  // 理由：声音该在用户停在任何页签时都响。挂在对话视图里的话，切走页签就哑了 ——
   // 那正是「这功能只在开着某个页签时有效」的毛病。这里的退订随插件 fiber 释放
   // （`ctx.effect`），页面卸载时连接跟着关掉。
   ctx.effect?.(() => startMiniMaxStream(), "dsh-herta: MiniMax PCM 流");
@@ -351,7 +270,7 @@ function apply(ctx: {
         name: "conversation.view",
         id: VIEW_ID,
         order: 20,
-        label: () => "黑塔",
+        label: () => "Herta",
         // 首个订阅会激活 chat target；此后它随会话常驻。
         inject: (sessionId: string) => ({
           hooks: { hertaChat: ctx.uiConversation.binding(sessionId).target("chat") },
@@ -360,26 +279,6 @@ function apply(ctx: {
       HertaView,
     );
     mark.viewRegistered = true;
-    return disposer;
-  });
-
-  // 第二个页签：整机（甲）。它同样订阅 chat target —— 数据由这个组件映射成
-  // 她的记录后用 postMessage 推给 iframe，而不是让 iframe 自己去连 DSH 的传输层。
-  ctx.slots.inject("conversation.view", () => {
-    const disposer = ctx.slots.register(
-      {
-        name: "conversation.view",
-        id: FULL_VIEW_ID,
-        order: 30,
-        label: () => "黑塔·整机",
-        // `sessionId` 由会话作用域的槽自带，不用 inject 再返回一次。
-        inject: (sessionId: string) => ({
-          hooks: { hertaChat: ctx.uiConversation.binding(sessionId).target("chat") },
-        }),
-      },
-      HertaFullView,
-    );
-    mark.fullViewRegistered = true;
     return disposer;
   });
 }

@@ -2,15 +2,10 @@
  * `.opus` 播放那条路：把「80 条随包音频」变成一个可点的声音（#2 精修，报告 candidate #2 的第三块）。
  *
  * 为什么单独一个文件：这一段是**点击朗读**那条链路（URL → Audio → 播放队列 / 影子 DOM 的高亮），
- * 与视图渲染（HertaView / HertaFullView）不是同一个变更原因 —— 改气泡布局不该碰播放的 diff。
+ * 与视图渲染（HertaView）不是同一个变更原因 —— 改气泡布局不该碰播放的 diff。
  *
  * 从 `ui.ts` 原样搬来：只改了所在文件与 export。
  */
-import {
-  buildRealtimeVoiceState,
-  isVoiceEngine,
-  normalizeVoiceSettings,
-} from "../host/voice-settings-shared.js";
 function clipUrl(rel) {
   return `/herta-voice/${String(rel).split("/").map(encodeURIComponent).join("/")}`;
 }
