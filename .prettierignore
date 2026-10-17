@@ -42,3 +42,12 @@ docs/
 # 719 行（**255 增 / 60 删**）—— 为了两行 `--ignore-scripts` 把整文件重排，代价远大于
 # 「换行风格统一」这点收益。
 scripts/preflight-release.mjs
+
+# ## 5. 官方底本：逐字节导出的证据，被重排一次就不再是证据
+#
+# `scripts/baselines/*.patch.yml` 是从官方发行版 `app.asar` 里**逐字节**导出的
+# standard 补丁层，README 里记着每一份的 SHA-256。prettier 哪怕只改引号风格
+# （`'…'` → `"…"`），文件也跟官方那份对不上了 —— 2026-10-17 发 0.1.11 时真发生：
+# pre-commit 的 lint-staged 把 0.2.1 底本的引号全换成双引号，于是 `build:preset`
+# 拿这份底本生成的 preset 与提交里的那份不一致，预检第 4 项（构建零差异）当场变红。
+scripts/baselines/

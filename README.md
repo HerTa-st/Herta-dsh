@@ -88,7 +88,7 @@ working-directory 服务作为 runtime context 注入，没有丢。preset 底�
 >    `设置命名空间已就绪：herta（自带页面，不自动生成）`、`整机页面已挂：/herta-ui`，
 >    **不应**出现 `settings.register is not a function`，也不应再出现
 >    `从整机迁移设置：…`（种子已删除）或 `设置写回已挂`（写回已删除）
-> 3. `npm test` → 1544 项（31 组）；`npm run test:integration` → 28 项
+> 3. `npm test` → 1556 项（31 组）；`npm run test:integration` → 28 项
 
 ---
 
@@ -466,7 +466,7 @@ node scripts\test-tts-runtime.mjs
 22 项：运行时能被加载（拿到 sherpa-onnx 版本号）→ 真合成出 **24 kHz 非静音**音频
 → WAV 头/采样数/字节数自洽 → 波形有起伏（不是一条平线）。
 
-`npm test` 跑 31 组（核心测试链 + MiniMax 那一组，共 **1544 项**）；另有 LLM 路径的集成测试
+`npm test` 跑 31 组（核心测试链 + MiniMax 那一组，共 **1556 项**）；另有 LLM 路径的集成测试
 （28 项，用 mock 的 `ctx.llm` 把管道整条跑通）：
 
 ```powershell
@@ -733,7 +733,7 @@ MIT 范围内**，权利归米哈游及各自所有者。本仓库已按《崩�
   不再只有一句「未接线」。参考音要 **DataURL**、要归一化成 **24kHz 单声道**
   （实测不这么做服务端回 400）；key 支持环境变量与 `C:/herta-ai/mimokey.txt` 文件兜底，
   参考音按上游 Herta 桌面版的实际落点去找（装过上游的人自带那份 174 秒素材）。
-- **验证**：`npm test` 链 **31 组 1544 项全过、0 失败**；`npm run test:integration` 28 项全过；
+- **验证**：`npm test` 链 **31 组 1556 项全过、0 失败**；`npm run test:integration` 28 项全过；
   发布预检八项全绿。
 - **仍未接 / 仍未决**：MiMo 缺 key 或参考音时只报原因、不会自己补；主题 `lib/opening/`
   的上游授权未决；「黑塔外观」的值存在浏览器 `localStorage`；`theme` / `deviceScene`
