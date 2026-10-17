@@ -56,8 +56,8 @@ _Avoid_: 快速提交、小改
 _Avoid_: 互相 review（太泛）
 
 **上游**：
-`PersonaCLI/Herta`（原作者仓库）。本仓库的 fork 是 `HerTa-st/Herta-g`，
-只读依赖副本是 `Herta-src`（无 git）。
+`PersonaCLI/Herta`（原作者仓库，**唯一基准**；2026-10-17 起不再经过 fork
+`HerTa-st/Herta-g`）。只读依赖副本是 `Herta-src`（无 git，锚点见 ADR-0007）。
 _Avoid_: Herta 官方、原仓库（指向不唯一）
 
 **ADR**：
