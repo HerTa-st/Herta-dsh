@@ -8,7 +8,7 @@
 1. **动了 `src/` 就重建产物。**
    `lib/*.js` 是 `src/host/*.js` 的平铺拷贝，`lib/client.js` 由 `src/client/index.tsx`
    经 esbuild 打包；`lib/` **随提交进仓库**，所以源码动了产物就得跟着动。
-   判据：`npm run build`（视改动再加 `build:ui` / `build:preset`）之后
+   判据：`npm run build`（视改动再加 `build:preset`）之后
    `git diff --name-only` 输出为空。
 2. **跑测试。** 判据：`npm test` 退出 0。链上每条命令自带它需要的 `--import` 标记，
    照链跑即可 —— 有的测试**要求不带** hook（`test-schema-optional` 验的是「没有
@@ -41,11 +41,11 @@
 
 ## 本机环境（跑测试与构建要的）
 
-| 项                                                          | 值                                                                    |
-| ----------------------------------------------------------- | --------------------------------------------------------------------- |
-| DSH 解包运行时（测试借 `@deepseek-ai/*`）                   | `E:\deepseek工作区\HerTa\dsh-017\node_modules`，或 `$env:DSH_MODULES` |
-| Herta 源码（`test-narrative` / `test-herta-settings` 要读） | `E:\deepseek工作区\HerTa\Herta-src`，或 `$env:HERTA_SRC`              |
-| esbuild（构建用）                                           | 上面那份 Herta 源码的 pnpm store 里                                   |
+| 项                                                     | 值                                                                    |
+| ------------------------------------------------------ | --------------------------------------------------------------------- |
+| DSH 解包运行时（测试借 `@deepseek-ai/*`）              | `E:\deepseek工作区\HerTa\dsh-017\node_modules`，或 `$env:DSH_MODULES` |
+| Herta 源码（`build*.mjs` / `test-narrative.mjs` 要读） | `E:\deepseek工作区\HerTa\Herta-src`，或 `$env:HERTA_SRC`              |
+| esbuild（构建用）                                      | 上面那份 Herta 源码的 pnpm store 里                                   |
 
 桌面应用 profile、`deploy.mjs` 更新本地安装、宿主版本事实源等**发版相关**的环境事实，
 集中在 [`RELEASING.md`](RELEASING.md) 的「0. 环境事实」一节。

@@ -12,19 +12,19 @@
 
 ## 0. 环境事实（先读，别猜）
 
-| 项               | 值                                                                                                                                                                                                                                                               |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 仓库             | `E:\deepseek工作区\HerTa\dsh-herta`（远端 `HerTa-st/Herta-dsh`）                                                                                                                                                                                                 |
-| 推送通道         | SSH（`ssh://git@ssh.github.com:443/…`）；main 有「必须走 PR」保护规则，但 `enforce_admins=false` → 管理员**可绕过**（推送时会出现 bypass 提示，属正常）                                                                                                          |
-| npm 身份         | `yunmengyuan`，`registry.npmjs.org`，2FA = **auth-and-writes**（发布必须带 OTP）                                                                                                                                                                                 |
-| `gh`             | 已登录 `YUNmengyuan`（scopes 含 `repo`）                                                                                                                                                                                                                         |
-| 桌面应用 profile | `C:\Users\梦源\.dsh\profiles\desktop`，里面是 **`file:` 安装**（不是 npm 安装）                                                                                                                                                                                  |
-| 本地更新插件     | `$env:DSH_PROFILE_DIR='C:\Users\梦源\.dsh\profiles\desktop'; node scripts/deploy.mjs`（镜像 lib/assets/preset/locale + 文档；逐字节核验；**不碰** profile 的 package.json）                                                                                      |
-| 宿主版本事实源   | `E:\deepseek Desktop\resources\runtime\primary-runtime\runtime.json` 的 `desktopVersion`                                                                                                                                                                         |
-| 构建依赖         | esbuild **固定 0.25.12**（ADR-0003 可复现构建），来自 `E:\deepseek工作区\HerTa\Herta-src\node_modules\.pnpm\esbuild@0.25.12`，双脚本找不到该版本即报错；preset 底本取仓库自带 `scripts/baselines/standard.dsh-*.patch.yml`（取版本最新）                         |
-| 测试             | **以 `package.json` 的 `test` 链为准**（当前 24 组 + `npm run test:minimax`）；预检按它逐条跑，并**沿用每条自己写的 `--import` 标记** —— 有几个测试**必须不带** hook（`test-schema-optional` 验的就是「没有 schemastery 时的兜底」，挂了 hook 等于把真库递进去） |
-| 上游目录         | 条目 `Herta-dsh`（`dsh-herta`）已收录；目录包 `dsh-plugin-catalog` **每天 UTC 02:23（北京 10:23）**重建                                                                                                                                                          |
-| 发布文档惯例     | 工作区根：`Herta-DSH-vX.Y.Z-Release说明.md` + `Herta-DSH-vX.Y.Z-公告.md`（模板在 `docs/templates/`）                                                                                                                                                             |
+| 项               | 值                                                                                                                                                                                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 仓库             | `E:\deepseek工作区\HerTa\dsh-herta`（远端 `HerTa-st/Herta-dsh`）                                                                                                                                                                                                         |
+| 推送通道         | SSH（`ssh://git@ssh.github.com:443/…`）；main 有「必须走 PR」保护规则，但 `enforce_admins=false` → 管理员**可绕过**（推送时会出现 bypass 提示，属正常）                                                                                                                  |
+| npm 身份         | `yunmengyuan`，`registry.npmjs.org`，2FA = **auth-and-writes**（发布必须带 OTP）                                                                                                                                                                                         |
+| `gh`             | 已登录 `YUNmengyuan`（scopes 含 `repo`）                                                                                                                                                                                                                                 |
+| 桌面应用 profile | `C:\Users\梦源\.dsh\profiles\desktop`，里面是 **`file:` 安装**（不是 npm 安装）                                                                                                                                                                                          |
+| 本地更新插件     | `$env:DSH_PROFILE_DIR='C:\Users\梦源\.dsh\profiles\desktop'; node scripts/deploy.mjs`（镜像 lib/assets/preset/locale + 文档；逐字节核验；**不碰** profile 的 package.json）                                                                                              |
+| 宿主版本事实源   | `E:\deepseek Desktop\resources\runtime\primary-runtime\runtime.json` 的 `desktopVersion`                                                                                                                                                                                 |
+| 构建依赖         | esbuild **固定 0.25.12**（ADR-0003 可复现构建），来自 `E:\deepseek工作区\HerTa\Herta-src\node_modules\.pnpm\esbuild@0.25.12`，`build.mjs` 找不到该版本即报错；preset 底本取仓库自带 `scripts/baselines/standard.dsh-*.patch.yml`（取版本最新）                           |
+| 测试             | **以 `package.json` 的 `test` 链为准**（当前 29 组 + `npm run test:minimax` = 30 组）；预检按它逐条跑，并**沿用每条自己写的 `--import` 标记** —— 有几个测试**必须不带** hook（`test-schema-optional` 验的就是「没有 schemastery 时的兜底」，挂了 hook 等于把真库递进去） |
+| 上游目录         | 条目 `Herta-dsh`（`dsh-herta`）已收录；目录包 `dsh-plugin-catalog` **每天 UTC 02:23（北京 10:23）**重建                                                                                                                                                                  |
+| 发布文档惯例     | 工作区根：`Herta-DSH-vX.Y.Z-Release说明.md` + `Herta-DSH-vX.Y.Z-公告.md`（模板在 `docs/templates/`）                                                                                                                                                                     |
 
 ---
 
@@ -111,7 +111,7 @@ $env:DSH_HOME='<空目录>'; dsh plugin --profile <临时名> add file:$env:TEMP
 ```
 
 **期望**：甲报「核验 N 个文件逐字节一致」；乙能装上且插件可加载。
-**然后关窗重开桌面应用**，设置 ▸ 黑塔 ▸ 语音点「试听」（Fish 引擎时「Fish 代理」留空）。
+**然后关窗重开桌面应用**，设置 ▸ Herta ▸ 语音点「试听」（Fish 引擎时「Fish 代理」留空）。
 
 ---
 

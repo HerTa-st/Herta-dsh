@@ -18,14 +18,15 @@ _Avoid_: 知识库（知识层按计划推迟，当前实现是记忆）
 _Avoid_: TTS 层（TTS 只是 C 层里发声的机制之一）
 
 **界面（D 层）**：
-用她的展示组件渲染 DSH 会话（乙），或 iframe 装下她的整机（甲），落在 `conversation.view` ×2。
-_Avoid_: UI 层（在本仓库 UI 特指 herta-ui 那块代码）
+用她的展示组件渲染 DSH 会话，落在 `conversation.view`（id `herta`）。
+_Avoid_: UI 层（太泛；DSH 里这块叫 `conversation.view`）
 
 ## 分工四域（两位开发者的模块边界）
 
 **界面与发布域**：
-`src/herta-ui/`、`preset/`、`locale/`、`cordis.patch.yml`，以及 `scripts/` 里的
-`build*.mjs` / `deploy.mjs` / `install-web.mjs` —— 界面产物与发布管线。
+`preset/`、`locale/`、`cordis.patch.yml`，以及 `scripts/` 里的
+`build*.mjs`（`build.mjs` / `build-preset.mjs` / `build-minimax.mjs`）/
+`deploy.mjs` / `install-web.mjs` —— 界面产物与发布管线。
 _Avoid_: D 层（D 层是产品词汇，本域是分工词汇）
 
 **设置与工具域**：

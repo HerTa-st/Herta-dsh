@@ -25,3 +25,8 @@ npm tarball（`package.json` 的 `files` 收了整个 `lib/`）。
 **代价与边界**：没有 esbuild 的机器不能再出产物（必须先备好 Herta-src 的
 pnpm store 或设 `HERTA_SRC`）；`test-artifact-sync` 的「发布目录无 `.bak`」检查
 保留 —— 它防的是「任何脚本把备份写进 npm 包」这个通用事件，不只当年的 reapply。
+
+> **2026-10-17 后续变更**：整机 iframe 视图（甲方案）已删除，`build-herta-ui.mjs` /
+> `npm run build:ui` 一并移除。上面第 1 条里「`build.mjs` 与 `build-herta-ui.mjs` 只认
+> esbuild 0.25.12」的固定工具链现在只剩 `build.mjs` 一条。决策本身（产物只经 build
+> 生成、不可手工修补）不变。
