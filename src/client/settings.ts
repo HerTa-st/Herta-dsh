@@ -1,31 +1,18 @@
 /**
  * 「设置页」那一层：字段表 / 样式 / 凭据与音色那几行 / 整个表单（#2 拆出的四个 region 之四）。
  *
- * 为什么单独一个文件：这一段是**表单与字段表**，与机器层（bridge/凭据通道）、语音层（SSE/PCM）、
+ * 为什么单独一个文件：这一段是**表单与字段表**，与机器层（设置表单/凭据通道）、语音层（SSE/PCM）、
  * 界面层（面板/视图）三项各不相干 —— 加一个设置项不必碰播放那条路的 diff。
  *
  * 从 `index.tsx` 原样搬来：只改了所在文件与 export。
  */
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { HertaBubble } from "@gui/components/Workspace/HertaBubble";
-import { UserBubble } from "@gui/components/Workspace/UserBubble";
-import { LocaleProvider } from "@gui/i18n/LocaleProvider";
-import hertaCss from "@gui/styles/reference-ux.css";
-import { fullSnapshot, nodesToRecord, toBubbles } from "../shared/mapping.js";
-import {
-  buildRealtimeVoiceState,
-  isVoiceEngine,
-  normalizeVoiceSettings,
-} from "../host/voice-settings-shared.js";
+import { createElement, useCallback, useEffect, useMemo, useState } from "react";
 import {
   FIELDS,
   normalizeSettings,
   SETTINGS_GROUPS,
-  SETTINGS_NAMESPACE,
   UNWIRED_FIELD_NAMES,
 } from "../host/settings-schema.js";
-import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
 // 机器层：密钥那几行走凭据缝（`machine.js`），不读写 Config。
 import {
   clearCredential,
@@ -46,7 +33,7 @@ import {
   voiceModelSubs,
 } from "./voice.ts";
 const UNWIRED_HINT =
-  "下面这些项在 DSH 里改得动、写得进，但**整机当前不会调用它们**：它们原本只被她自己的设置页读写，或者只被「写回她自己的 settings.json」这条已删除的链路消费。逐行的原因见每一项下面那行小字。";
+  "下面这些项在 DSH 里改得动、写得进，但**当前没有任何代码读它们**：它们原本服务于已删除的整机视图、她自己的设置页，或者只被「写回她自己的 settings.json」这条已删除的链路消费。逐行的原因见每一项下面那行小字。";
 
 /**
  * 要进 DSH 凭据存储的三个密钥。
@@ -84,15 +71,6 @@ const CREDENTIALS = [
     placeholder: "Fish Audio 控制台里的 API Key",
   },
 ];
-
-/**
- * 「打开网盘」的目标。
- *
- * 抄自 `Herta-src/packages/gui/src/shared/links.ts` 的 `NETDISK_URL` ——
- * 客户端 bundle 不能 import 上游源码，所以这里是**第三份**副本（另两份是
- * 那个常量本身与官网下载页）。它几乎不会变；真变了改三处。
- */
-const NETDISK_URL = "https://pan.baidu.com/s/1k-47zy6TTDWl0OaT2WCFUg?pwd=y195";
 
 /**
  * 引擎那一行的逐档文案。**住在字段描述符里**（`FIELDS.voiceEngine.engine`），
@@ -184,7 +162,7 @@ const BADGE_STYLE = {
   border: "1px solid var(--dsw-alias-border-l1)",
   borderRadius: 4,
 };
-/** 次要按钮：密钥的存/清、模型动作、打开网盘。 */
+/** 次要按钮：密钥的存/清、模型动作。 */
 const ACTION_BUTTON_STYLE = {
   padding: "4px 10px",
   fontSize: 12,
@@ -222,7 +200,7 @@ export function loadSeedModule(id: string): any {
 }
 
 /**
- * 造「黑塔」设置页组件。
+ * 造「Herta」设置页组件。
  *
  * @param ui - 模块加载器给的 `@deepseek-ai/dsh-client-ui-primitives`。
  * @returns 组件。
@@ -443,7 +421,7 @@ export function createSettingsSection(ui: unknown) {
    *
    * 这是**真动作**：宿主侧 `/herta-voice-model`（`src/host/voice-model-route.js`
    * + `voice-model.js`）真的会去上游地址取归档、解到 `$DSH_HOME/tts/`。
-   * 状态与进度靠轮询（下载中才开定时器），复用 iframe 那侧同一套镜像。
+   * 状态与进度靠轮询（下载中才开定时器），镜像由 `voice.ts` 维护。
    */
   function VoiceModelRow(): unknown {
     const [state, setState] = useState<Record<string, unknown> | null>(voiceModelState);
@@ -549,7 +527,7 @@ export function createSettingsSection(ui: unknown) {
    * 这一行要多三样**不是字段**的东西：
    *   ① 逐档「现在到底会不会出声、要付什么代价」的一句说明（`FIELDS.voiceEngine.engine.notes`）；
    *   ② 本地模型 / 运行时的**真探测**结果 —— 同一份 `/herta-voice-model` 镜像，
-   *      与「整机动作 › 本地语音模型」那行共用（不另开一次 HTTP）；
+   *      与「本地语音 › 本地语音模型」那行共用（不另开一次 HTTP）；
    *   ③ 试听按钮与它的结果。
    *
    * 静音提示也挂在这里：试听走的是浏览器播放路径，而那条路有静音闸门
@@ -802,7 +780,7 @@ export function createSettingsSection(ui: unknown) {
   /**
    * MiniMax 语音的**认领状态 + 重新认领**。
    *
-   * 「设置页黑塔 → 语音那一栏」的这一行，与上面那个「本地语音模型」是两条不同的
+   * 「设置页 Herta → 语音那一栏」的这一行，与上面那个「本地语音模型」是两条不同的
    * 链路：那个是离线模型归档，这个是云端克隆音色的认领状态。值的来源是
    * `/herta-minimax-state`，与 SSE 的 `state` 帧是**同一份**宿主快照。
    *
@@ -925,39 +903,6 @@ export function createSettingsSection(ui: unknown) {
     );
   }
 
-  /** 「打开网盘」—— 一个真链接，不是占位。 */
-  function NetdiskRow(): unknown {
-    return createElement(
-      "div",
-      { style: ROW_STYLE },
-      createElement(
-        "div",
-        { style: { flex: "1 1 auto", minWidth: 0 } },
-        createElement("div", { style: LABEL_STYLE }, "安装包网盘"),
-        createElement(
-          "div",
-          { style: HINT_STYLE },
-          "整机安装包的网盘镜像（网络到不了 GitHub 时用）。**不含语音模型**（模型只能从 GitHub 下）。在新标签页里打开。",
-        ),
-      ),
-      createElement(
-        "div",
-        { style: { flex: "0 0 auto", paddingTop: 1 } },
-        createElement(
-          "button",
-          {
-            type: "button",
-            style: ACTION_BUTTON_STYLE,
-            onClick: () => {
-              window.open(NETDISK_URL, "_blank", "noopener,noreferrer");
-            },
-          },
-          "打开网盘",
-        ),
-      ),
-    );
-  }
-
   /**
    * 「同步到工作区」的路径输入。
    *
@@ -1054,11 +999,11 @@ export function createSettingsSection(ui: unknown) {
     const header = createElement(
       "div",
       null,
-      createElement("div", { style: { fontSize: 15, fontWeight: 600, marginBottom: 6 } }, "黑塔"),
+      createElement("div", { style: { fontSize: 15, fontWeight: 600, marginBottom: 6 } }, "Herta"),
       createElement(
         "div",
         { style: NOTE_STYLE },
-        "黑塔的设置**只有这一处**。她的整机界面里那套设置面板已经删除，所以这里改的值就是她读到的值。",
+        "Herta 的设置**只有这一处**。接线过的字段，这里改的值就是她读到的值；下面「暂未接线」那组字段目前没有消费方。",
       ),
       createElement(
         "div",
@@ -1178,9 +1123,9 @@ export function createSettingsSection(ui: unknown) {
     );
 
     const actionsGroup = group(
-      "整机动作",
-      "下面两个都是**真动作**：宿主侧的实现已经存在，按下去会有实际后果。",
-      [createElement(VoiceModelRow, { key: "voice-model" }), createElement(NetdiskRow, { key: "netdisk" })],
+      "本地语音",
+      "下面这个是**真动作**：宿主侧的实现已经存在，按下去会有实际后果。",
+      [createElement(VoiceModelRow, { key: "voice-model" })],
     );
 
     // 「暂未接线」那一组由字段表自己的 `UNWIRED_FIELD_NAMES` 生成 ——

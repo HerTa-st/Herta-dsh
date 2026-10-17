@@ -12,28 +12,10 @@ import { HertaBubble } from "@gui/components/Workspace/HertaBubble";
 import { UserBubble } from "@gui/components/Workspace/UserBubble";
 import { LocaleProvider } from "@gui/i18n/LocaleProvider";
 import hertaCss from "@gui/styles/reference-ux.css";
-import { fullSnapshot, nodesToRecord, toBubbles } from "../shared/mapping.js";
+import { toBubbles } from "../shared/mapping.js";
+// 机器层（设置表单）：静音开关与音量读写的是同一份设置。
 import {
-  buildRealtimeVoiceState,
-  isVoiceEngine,
-  normalizeVoiceSettings,
-} from "../host/voice-settings-shared.js";
-import {
-  FIELDS,
-  normalizeSettings,
-  SETTINGS_GROUPS,
-  SETTINGS_NAMESPACE,
-  UNWIRED_FIELD_NAMES,
-} from "../host/settings-schema.js";
-import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
-// 机器层（设置表单 / 凭据缝）：整机 iframe 的应答器要同步读设置值、写字段、查密钥。
-import {
-  clearCredential,
-  credentialStatus,
   machineField,
-  machineValues,
-  saveCredential,
-  setFormValueListener,
   writeMachineField,
 } from "./machine.ts";
 // 语音层：歌词气泡的点击朗读、SSE 音色状态、MiniMax 的动作入口都在那边。
@@ -41,13 +23,6 @@ import {
   localQueue,
   playLocalVoice,
   postMiniMaxAction,
-  postVoiceModel,
-  refreshVoiceModel,
-  registerVoiceSink,
-  stopVoiceModelTimer,
-  voiceModelFacts,
-  voiceModelState,
-  voiceModelSubs,
 } from "./voice.ts";
 function currentDshTheme(): "dark" | "light" {
   return document.documentElement.style.colorScheme === "dark" ? "dark" : "light";
@@ -283,7 +258,7 @@ import {
  * 开头那次早退），所以按了它"没反应"，看起来就像"要等话说完"。
  *
  * 现在它写设置：那条写入经 `machine` 的订阅回调走到语音层的 `applyMuteNow()`，
- * 增益当场归零、已排的音频停掉、iframe 收到 `ttsStop` —— 这才是"点了就闭嘴"。
+ * 增益当场归零、已排的音频停掉 —— 这才是"点了就闭嘴"。
  *
  * @param current 当前显示的静音态（来自设置镜像）。
  * @param markLocal 把本地镜像立刻改掉（乐观更新：按钮不许等宿主回执才变色）。
@@ -300,7 +275,7 @@ export function toggleMuteSetting(current: boolean, markLocal: (next: boolean) =
  * 静音状态的订阅者（工具条那个按钮要跟着设置走）。
  *
  * 为什么需要：工具条的 `muted` 只是**镜像** —— 真相在设置里（`voiceMuted`）。
- * 设置页按了、或整机 iframe 那两个按钮按了、或页面刷新时值本来就是静音，
+ * 设置页按了、或页面刷新时值本来就是静音，
  * 工具条的标签都得跟着变；否则两处显示会打架（一个说「有声」、实际一声不出）。
  *
  * 谁往这里推：装配层接到设置变更回调之后调 `notifyMuteChanged()`（见 `index.tsx`）——
@@ -351,7 +326,7 @@ function HertaPanel(props: { bubbles: readonly Bubble[]; voiceCues: readonly Voi
   // 于是 `applyMuteNow()` 立刻把增益压到 0（见 `voice.ts` 的那个函数）。
   const [muted, setMuted] = useState(() => machineField("voiceMuted") === true);
 
-  // 别处改了静音（设置页、整机 iframe 的按钮、或宿主回写）→ 标签跟着变。
+  // 别处改了静音（设置页、或宿主回写）→ 标签跟着变。
   useEffect(() => subscribeMuteChanged(setMuted), []);
   const [notice, setNotice] = useState("");
   const [autoVoice, setAutoVoice] = useState(true);
@@ -585,351 +560,4 @@ export function HertaView(props: {
   }, [bubbles, dropped]);
 
   return createElement("div", { ref: hostRef, "data-dsh-herta-view": "ready" });
-}
-
-/**
- * DSH 会话节点 → 她的 `TerminalRecord`（甲的数据映射，乙映射的反方向）。
- *
- * 她的记录只有三种块：`user` / `herta`（surface 分 speech|thought）/ `system`。
- * 映射规则与乙那边保持一致，只是方向相反：
- *
- * | DSH 节点 | 她的块 |
- * |---|---|
- * | `user` / `steering` | `user` |
- * | `assistant`（text 块） | `herta{surface:'speech'}` |
- * | `assistant`（reasoning 块） | **丢弃** —— 她的 `thought` surface 本来就不渲染 |
- * | `tool-result` | `system{label:'系统', body:工具摘要}` |
- * | `turn-error` | `system{label:'系统', body:错误}` |
- * | context / command / compaction | `system` 或丢弃（她的模型里没有对应物） |
- */
-/**
- * 「黑塔·整机」视图（甲方案）。
- *
- * 与「黑塔」页签（乙）的分工：
- *   · 乙 = 用她的**展示组件**渲染 DSH 的会话 —— 「她在 DSH 里干活」
- *   · 甲 = 用 iframe 装下她的**整个世界**（侧栏 / 开场 / 设备卡 / 她自己的会话）
- *
- * 用 iframe 而不是把整机组件塞进槽里，有三个实打实的理由：
- *   1. **样式**：整机用的是她原版的整页样式（`:root` / `body` 整页规则），
- *      塞进宿主的 slot 必然打架；iframe 天然是独立文档。
- *   2. **隔离**：整机是 16 MB 的应用，它崩了不该拖垮 DSH 界面。
- *   3. **它本来就是按窗口写的**：固定定位、vw/vh、按视口测量 —— 上游官网
- *      也是因此把 demo 放进 iframe 的。
- *
- * 数据流：这个组件用 `useHertaChat` 订阅会话，把节点映射成她的记录后用
- * postMessage 推给 iframe；iframe 里的 bridge 发过来的调用也在这里回答。
- */
-export function HertaFullView(props: {
-  sessionId?: string;
-  useHertaChat?: (
-    sel: (s: unknown) => unknown,
-  ) => { legacy?: { nodes?: readonly unknown[]; partial?: unknown } } | undefined;
-}): unknown {
-  const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const chat =
-    typeof props.useHertaChat === "function"
-      ? (props.useHertaChat((s) => s) as
-          | { legacy?: { nodes?: readonly unknown[]; partial?: unknown } }
-          | undefined)
-      : undefined;
-  const nodes = chat?.legacy?.nodes ?? NO_NODES;
-  const record = useMemo(() => nodesToRecord(nodes), [nodes]);
-  const title = useMemo(() => null, []);
-
-  // 最新一帧的数据放在 ref 里 —— 应答 iframe 的调用时需要同步读到它，
-  // 而事件监听器只挂一次，闭包捕获不到后续的新值。
-  const latest = useRef({ record, nodes, sessionId: props.sessionId, title });
-  latest.current = { record, nodes, sessionId: props.sessionId, title };
-
-  /** 往 iframe 推一条消息。iframe 还没加载完时静默丢弃。 */
-  const push = (event: string, payload: unknown) => {
-    const win = frameRef.current?.contentWindow;
-    if (win === null || win === undefined) return;
-    win.postMessage({ __herta: true, kind: "event", event, payload }, window.location.origin);
-  };
-
-  // 数据变了就整份推送（她的 store 走 replace 路径）。
-  useEffect(() => {
-    const { record: r, nodes: n, sessionId, title: t } = latest.current;
-    if (r.length === 0 && n.length === 0) {
-      // 空会话：推「没有会话」，让渲染层走它自己的未连接分支而不是空转。
-      push("reset", { noSession: true });
-      return;
-    }
-    push("reset", fullSnapshot(sessionId, r));
-    const mark = globalThis.__DSH_HERTA__;
-    if (mark !== undefined) {
-      mark.fullViewPushed = (mark.fullViewPushed ?? 0) + 1;
-      mark.fullViewBlocks = r.length;
-    }
-  }, [record, nodes, props.sessionId]);
-
-  // 离线模型状态：**父窗口主动推一次**。
-  // iframe 那边的 `onVoiceModel` 本来只登记本地监听，订阅时才补一个 call 过来；
-  // 而那台设置面板是先 `getRealtimeVoice()` 再订阅 —— 父窗口不主动推的话，
-  // 首次读到的 `model.unpackedBytes` 是 0，面板就显示「约 0 MB」而不是真实体积。
-  useEffect(() => {
-    let alive = true;
-    void refreshVoiceModel().then((s) => {
-      if (!alive) return;
-      push("voiceModel", s);
-      const mark = globalThis.__DSH_HERTA__;
-      if (mark !== undefined) {
-        mark.voiceModelPushed = true;
-        mark.voiceModelPhase = (s as { phase?: string } | null)?.phase ?? null;
-      }
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // 应答 iframe 的调用。
-  useEffect(() => {
-    const reply = (id: number, value: unknown) =>
-      frameRef.current?.contentWindow?.postMessage(
-        { __herta: true, kind: "reply", id, value },
-        window.location.origin,
-      );
-    const fail = (id: number, error: string) =>
-      frameRef.current?.contentWindow?.postMessage(
-        { __herta: true, kind: "reply", id, error },
-        window.location.origin,
-      );
-
-    const onMessage = (event: MessageEvent) => {
-      const msg = event.data as {
-        __herta?: boolean;
-        kind?: string;
-        id?: number;
-        method?: string;
-        params?: unknown;
-      };
-      if (msg === null || typeof msg !== "object" || msg.__herta !== true) return;
-
-      if (msg.kind === "hello") {
-        const { record: r, nodes: n, sessionId, title: t } = latest.current;
-        push("reset", r.length === 0 && n.length === 0 ? { noSession: true } : fullSnapshot(sessionId, r));
-        const mark = globalThis.__DSH_HERTA__;
-        if (mark !== undefined) mark.fullViewBooted = true;
-        return;
-      }
-      if (msg.kind !== "call" || typeof msg.id !== "number") return;
-
-      switch (msg.method) {
-        // ── 设置（全部读写同一个设置命名空间）────────────────────────────
-        //
-        // **以前这几个是坏的**：`getLocale` / `getCloseToTray` / `getDreamConfig`
-        // 返回硬编码常量，三个 setter 根本没进 switch（落到 default 的
-        // 「还没有实现」分支）。也就是她的设置面板能点、点了不报错、值却永远不变 ——
-        // 典型假绿。现在统一读写 `ctx.configForms.get("herta")`，
-        // 与 DSH 设置页里的「黑塔」一页是同一份值、同一条写入路径。
-        //
-        // ## 为什么她的设置页删了，这里的分支还留着
-        //
-        // 删掉 `Herta-src` 那套 `components/Settings/*` 之后，`getDreamConfig` /
-        // `getCloseToTray` / `getAutoUpdate` / `getBackendConfig` / `getModelConfig`
-        // / `getInteractionLanguage` / `getRealtimeVoice` / `getVoiceEngine` 与
-        // 各自的 setter **在渲染层里已经没有调用方**了。它们留在这里有两个理由：
-        //   · `HertaBridge` 契约把这些成员声明为**必填**（`bridge-types.ts:617-672`），
-        //     少一个就是类型错，而它是上游文件 —— 我们不改它的形状；
-        //   · 这些正是「暂未接线」那组字段的接线点：将来把消费方接回来时，
-        //     落地处就是这些分支，不是别处。
-        // 字段表里对应项的 `wired: false` + `note` 记的才是事实，别把「有分支」
-        // 误读成「有人调」。
-        case "getLocale": {
-          // bridge 的 `getLocale` 要一个真语言（`"zh" | "en"`），而设置里的
-          // `locale` 允许空串 = 跟随系统。空串在这里按系统语言解析。
-          const locale = machineValues().locale;
-          if (typeof locale === "string" && locale !== "") return reply(msg.id, locale);
-          return reply(msg.id, navigator.language?.startsWith("zh") === true ? "zh" : "en");
-        }
-        case "setLocale": {
-          const next = (msg.params as { locale?: unknown } | undefined)?.locale;
-          if (next === "zh" || next === "en") void writeMachineField("locale", next);
-          return reply(msg.id, undefined);
-        }
-        case "getTheme":
-          return reply(msg.id, currentDshTheme());
-        case "getCloseToTray":
-          return reply(msg.id, machineValues().closeToTray);
-        case "setCloseToTray": {
-          const next = (msg.params as { enabled?: unknown } | undefined)?.enabled;
-          if (typeof next === "boolean") void writeMachineField("closeToTray", next);
-          return reply(msg.id, undefined);
-        }
-        case "getDreamConfig":
-          return reply(msg.id, { enabled: machineValues().dreamEnabled });
-        case "setDreamConfig": {
-          const next = (msg.params as { cfg?: { enabled?: unknown } } | undefined)?.cfg?.enabled;
-          if (typeof next === "boolean") void writeMachineField("dreamEnabled", next);
-          return reply(msg.id, undefined);
-        }
-        case "getDeepSeekKeyStatus": {
-          // **真值，不是常量。** 上一版这里硬返回 `{set:true}`：她的界面会显示
-          // 「密钥已设置」，而 DSH 到底有没有那把钥匙谁也不知道。现在读的是
-          // DSH 自己的凭据缝 —— ref 与官方模型页用的是同一个
-          // （`dsh-llm-deepseek-api-key` 的 `apiKeyEnv` 默认 `DEEPSEEK_API_KEY`）。
-          // 拿不到凭据服务时如实报未设置，而不是猜「已设置」。
-          void credentialStatus("DEEPSEEK_API_KEY").then((status) => {
-            reply(msg.id, {
-              set: status?.configured === true,
-              hint: status === undefined ? null : "DSH 的模型配置",
-              encrypted: true,
-            });
-          });
-          return;
-        }
-        case "listSessions":
-          // 整机视图目前只服务「当前这一个 DSH 会话」，所以她自己的会话列表是空的。
-          return reply(msg.id, []);
-        case "maybePlayEasterEgg":
-          return reply(msg.id, undefined);
-        // ── 语音（VoiceSettings 的 12 个应答器，见 Herta-语音模块-交接.md §2.2）──
-        // 上游 bridge 契约里这些方法原本全部缺失，整块静默失败（能选但不生效）。
-        //
-        // **引擎与开关现在是真的**：来自 DSH 设置命名空间 `herta` 的两个字段
-        // （`voiceEngine` / `realtimeVoice`），也就是 DSH 设置页里「黑塔」那一页
-        // 改的是同一份值。写入落进 profile 的 `cordis.patch.yml`，并由宿主侧
-        // 同步进整机自己的 `settings.json`。
-        //
-        // 其余字段是**宿主事实**（模型在不在、密钥设没设）。三个引擎现在都还没
-        // 接线（第三步离线引擎、第四步触发点），所以如实报告「不可用」——
-        // 这修掉了上一版硬编码 `bundle: true, runtime: true` 的假绿：
-        // 那会让设置面板把离线引擎显示成「已就绪」，而 DSH 一个音都合成不出来。
-        case "getRealtimeVoice":
-          return reply(
-            msg.id,
-            buildRealtimeVoiceState(
-              normalizeVoiceSettings(voiceScope.getSnapshot().value),
-              // 宿主事实：离线模型的真实阶段与进度（runtime 仍如实报 false）。
-              voiceModelFacts(),
-            ),
-          );
-        case "setRealtimeVoice": {
-          const next = (msg.params as { next?: unknown } | undefined)?.next;
-          if (typeof next === "boolean") void voiceScope.set("realtimeVoice", next);
-          return reply(msg.id, undefined);
-        }
-        case "getVoiceEngine":
-          return reply(msg.id, normalizeVoiceSettings(voiceScope.getSnapshot().value).engine);
-        case "setVoiceEngine": {
-          const engine = (msg.params as { engine?: unknown } | undefined)?.engine;
-          if (isVoiceEngine(engine)) void voiceScope.set("engine", engine);
-          return reply(msg.id, undefined);
-        }
-        case "downloadVoiceModel":
-          // 真实的离线模型下载（ADR 0061）：宿主 `/herta-voice-model` 点火即返回，
-          // 进度靠 `voiceModelFacts()` 轮询回给 `getRealtimeVoice` 与 `voiceModel` 事件。
-          // 成功后宿主把模型装到 `$DSH_HOME/tts/herta-best-e72`。
-          void postVoiceModel("download").then((s) => reply(msg.id, s));
-          return;
-        case "onVoiceModel": {
-          // 整机那边的 bridge 用 `on("voiceModel", cb)` 本地订阅，父窗口这里
-          // 只负责「开始推」：先补一条当前状态，之后每次变化都推。
-          const sub = (state: unknown) => push("voiceModel", state);
-          voiceModelSubs.add(sub);
-          void refreshVoiceModel().then(() => push("voiceModel", voiceModelState));
-          return reply(msg.id, undefined);
-        }
-        case "getVoicePrefs": {
-          // 静音与音量原来住在渲染层 localStorage（`herta.voice.muted` /
-          // `herta.voice.volume`），DSH 侧没有任何通道能读写它们。现在它们是
-          // 设置字段表的两个真字段，经这里下发；整机那边由
-          // `voice-prefs.ts` 的 `hydrateVoicePrefs` 接住。
-          // bridge 契约用 0–1（与 HTMLAudioElement / WebAudio 同一单位），
-          // 设置字段用 0–100 —— 换算只在这一处。
-          const volume = Number(machineField("voiceVolume"));
-          return reply(msg.id, {
-            muted: machineField("voiceMuted") === true,
-            volume: Number.isFinite(volume) ? Math.min(1, Math.max(0, volume / 100)) : 1,
-          });
-        }
-        case "setVoiceMuted": {
-          const next = (msg.params as { muted?: unknown } | undefined)?.muted;
-          if (typeof next === "boolean") void writeMachineField("voiceMuted", next);
-          return reply(msg.id, undefined);
-        }
-        case "setVoiceVolume": {
-          const next = (msg.params as { volume?: unknown } | undefined)?.volume;
-          if (typeof next === "number" && Number.isFinite(next)) {
-            const percent = Math.round(Math.min(1, Math.max(0, next)) * 100);
-            void writeMachineField("voiceVolume", percent);
-          }
-          return reply(msg.id, undefined);
-        }
-        case "prepareMiniMaxVoice":
-          return reply(msg.id, { phase: "absent" });
-        case "onMiniMaxVoice":
-          return reply(msg.id, undefined);
-        case "clearMiniMaxKey": {
-          // 真删。上一版固定回 `{ok:true}` 而不真删 —— 界面显示「已清除」，
-          // 磁盘上的密钥还在，是那种最坏的假绿。
-          void clearCredential("MINIMAX_API_KEY").then((failure) => {
-            reply(msg.id, {
-              ok: failure === null,
-              status: { set: false, hint: failure, encrypted: true },
-            });
-          });
-          return;
-        }
-        case "setMiniMaxKey": {
-          // 真存。密钥进 DSH 的凭据存储，**不进** profile 的明文配置。
-          const value = (msg.params as { key?: unknown } | undefined)?.key;
-          if (typeof value !== "string" || value.trim().length === 0) {
-            return reply(msg.id, { ok: false, reason: "empty" });
-          }
-          void saveCredential("MINIMAX_API_KEY", value.trim()).then((failure) => {
-            reply(
-              msg.id,
-              failure === null
-                ? { ok: true, status: { set: true, hint: "DSH 凭据存储", encrypted: true } }
-                : { ok: false, reason: failure },
-            );
-          });
-          return;
-        }
-        case "cancelVoiceModelDownload":
-          // 以前这里是个空实现 —— 点了取消什么都没发生。
-          void postVoiceModel("cancel").then(() => reply(msg.id, undefined));
-          return;
-        case "removeVoiceModel":
-          void postVoiceModel("remove").then((s) => reply(msg.id, s));
-          return;
-        default:
-          return fail(msg.id, `整机视图还没有实现 ${String(msg.method)}`);
-      }
-    };
-
-    window.addEventListener("message", onMessage);
-    return () => {
-      window.removeEventListener("message", onMessage);
-      // 整机视图卸载：订阅者与轮询都该停 —— 否则每挂一次就多留一个定时器。
-      voiceModelSubs.clear();
-      stopVoiceModelTimer();
-    };
-  }, []);
-
-  return createElement("iframe", {
-    // 回调 ref 而不是 `ref={frameRef}`：挂载/卸载的那一刻就把这份 iframe
-    // 登记成 MiniMax PCM 的语音出口（卸载时自动退回父窗口那条路）。
-    // 用 `useEffect` 做不到这一点 —— 它读到的 `frameRef.current` 在首次渲染时
-    // 还是 null。
-    ref: (node: HTMLIFrameElement | null) => {
-      frameRef.current = node;
-      registerVoiceSink(node);
-    },
-    "data-dsh-herta-view": "full",
-    src: "/herta-ui/",
-    title: "黑塔 · 整机",
-    style: {
-      width: "100%",
-      // 槽位不一定给出确定高度，所以两个都给：父容器有高度就用 100%，
-      // 没有就退到视口高度减掉顶栏/输入区的估值。
-      height: "100%",
-      minHeight: "70vh",
-      border: "0",
-      display: "block",
-    },
-  });
 }

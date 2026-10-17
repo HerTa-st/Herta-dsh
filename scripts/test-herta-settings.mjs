@@ -1,5 +1,5 @@
 /**
- * 「黑塔」设置的单测 —— 纯逻辑，在 Node 里直接跑，不需要 DSH 运行时。
+ * 「Herta」设置的单测 —— 纯逻辑，在 Node 里直接跑，不需要 DSH 运行时。
  *
  * 这个文件在 2026-09-26 被**重写**过一次：上一版测的是「把值写回整机自己读的
  * 两份 settings.json」（`settings-sync.js`：读-改-写、原子落盘、旧文件迁移、
@@ -12,8 +12,9 @@
  *   3. 交叉核对：`src/host/index.js` 的 Config 生成器与字段表同源
  *   4. **没有第二个真相来源**：`settings-sync.js` 不存在，字段表也不再导出
  *      写回意图 / 种子 / `sanitizeFollowedFields` 那一套
- *   5. **语音偏好真的接了 bridge**：`bridge.ts` 有三个新成员、
- *      `voice-prefs.ts` 有 `hydrateVoicePrefs`、`main.tsx` 调了它
+ *   5. **整机视图不许加回来**：`src/herta-ui` / `lib/herta-ui` /
+ *      `build-herta-ui.mjs` 不存在，客户端不再注册 `herta-full` 页签、不再有
+ *      `HertaFullView` 与 iframe 语音出口
  *   6. **每个活字段都会被渲染**：每个 `wired` 字段都必须声明 `group`，且那个组名
  *      必须在分组声明里 —— `voiceEngine` / `realtimeVoice` 曾因为「已接线」与
  *      「在哪个组里」是两份名单而静默不渲染；`theme` / `deviceScene` 曾因为两边
@@ -78,7 +79,7 @@ console.log("herta-settings");
       (n) => typeof FIELDS[n].min === "number" && typeof FIELDS[n].max === "number" && FIELDS[n].min <= FIELDS[n].def && FIELDS[n].def <= FIELDS[n].max,
     ),
   );
-  // 这两个字段的默认值是「缺席」语义，整机会自己解释成「跟随系统 / follow」。
+  // 这两个字段的默认值是「缺席」语义，上游桌面应用会自己解释成「跟随系统 / follow」。
   check("locale 默认为空串（= 跟随系统）", DEFAULTS.locale === "");
   check("interactionLanguage 默认为 follow", DEFAULTS.interactionLanguage === "follow");
 }
@@ -98,15 +99,16 @@ console.log("herta-settings");
     "没声明 wired:false 的项不带 note（别把活的写成死的）",
     WIRED_FIELD_NAMES.every((n) => FIELDS[n].note === undefined),
   );
-  // 本轮新加的两个字段必须是活的：整机的播放路径真的读它们。
+  // 本轮新加的两个字段必须是活的：浏览器播放链路真的读它们。
   check("voiceMuted / voiceVolume 是活字段", WIRED_FIELD_NAMES.includes("voiceMuted") && WIRED_FIELD_NAMES.includes("voiceVolume"));
   // 2026-09-30 体检核实：`theme` 与 `deviceScene` 在 DSH 侧**没有消费方**
   // （主题由外壳自己管；设备卡的 postMessage 分支根本没实现），所以它们被标成
   // `wired: false`，只该活在「暂未接线」里、各带一条 `note`。
-  // `locale` 仍是活字段 —— 宿主真的按它解析整机界面语言。
+  // 2026-10-17 整机视图删除后，`locale` 也失去了它唯一的消费者（整机 bridge 的
+  // getLocale 应答器），于是同样标成未接线。
   check(
-    "locale 是活字段，theme / deviceScene 已被体检标成未接线",
-    WIRED_FIELD_NAMES.includes("locale") &&
+    "locale / theme / deviceScene 都是未接线字段",
+    UNWIRED_FIELD_NAMES.includes("locale") &&
       UNWIRED_FIELD_NAMES.includes("theme") &&
       UNWIRED_FIELD_NAMES.includes("deviceScene"),
   );
@@ -384,66 +386,22 @@ console.log("herta-settings");
   check("客户端页面不再宣称「同步到整机读的那几份 settings.json」", !clientText.includes("再同步到整机读的那几份"));
 }
 
-// ── 5. 语音偏好真的接了 bridge（防回归）────────────────────────────────────
+// ── 5. 整机视图已删除，不许顺手加回来（防回归）──────────────────────────────
 {
-  const bridgeText = readFileSync(join(root, "src", "herta-ui", "bridge.ts"), "utf8");
-  for (const member of ["getVoicePrefs", "setVoiceMuted", "setVoiceVolume"]) {
-    check(`整机 bridge 实现并转发 ${member}`, bridgeText.includes(`${member}:`));
-  }
-  check(
-    "bridge 的静音兜底与字段表默认值一致（不静音）",
-    /getVoicePrefs[\s\S]{0,120}muted:\s*false/.test(bridgeText),
-  );
-  check(
-    "bridge 的音量兜底是满音量（1，即字段表的 100）",
-    /getVoicePrefs[\s\S]{0,160}volume:\s*1\b/.test(bridgeText),
-  );
-
-  const prefsText = readFileSync(join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "voice", "voice-prefs.ts"), "utf8");
-  check("整机 voice-prefs 导出 hydrateVoicePrefs", prefsText.includes("export async function hydrateVoicePrefs"));
-  check("整机 voice-prefs 仍有 localStorage 兜底（官网 demo / 独立版不受影响）", prefsText.includes("localStorage.setItem"));
-  check("整机 voice-prefs 在 host 接手时不再写 localStorage", prefsText.includes("remoteOwnsPrefs()"));
-
-  const mainText = readFileSync(join(root, "src", "herta-ui", "main.tsx"), "utf8");
-  check("整机页入口调了 hydrateVoicePrefs", mainText.includes("hydrateVoicePrefs"));
-
-  const typesText = readFileSync(join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "ipc", "bridge-types.ts"), "utf8");
-  check("HertaBridge 契约里有 VoicePrefs", typesText.includes("export interface VoicePrefs"));
+  check("src/herta-ui 整块已删除（页面入口不在源码里）", !existsSync(join(root, "src", "herta-ui")));
+  check("lib/herta-ui 产物已删除", !existsSync(join(root, "lib", "herta-ui")));
+  check("build-herta-ui.mjs 已删除", !existsSync(join(root, "scripts", "build-herta-ui.mjs")));
 
   const clientText = readFileSync(join(root, "src", "client", "index.tsx"), "utf8");
-    // 界面那一层已拆到 ui.ts（#2 第三步）：这一段的两条断言改看它。
-    const uiText = readFileSync(join(root, "src", "client", "ui.ts"), "utf8");
-  check("父窗口应答 getVoicePrefs", uiText.includes('case "getVoicePrefs"'));
-  check("父窗口把 0–100 换算成 0–1 下发", uiText.includes("volume / 100"));
-}
+  check("客户端不再注册 herta-full 页签", !clientText.includes("herta-full"));
+  check("客户端不再引用 HertaFullView", !clientText.includes("HertaFullView"));
 
-// ── 6. 设置页已从整机删除（防回归）──────────────────────────────────────────
-{
-  const settingsDir = join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "components", "Settings");
-  for (const gone of [
-    "SettingsModal.tsx",
-    "LanguageSettings.tsx",
-    "WindowSettings.tsx",
-    "UpdateSettings.tsx",
-    "VoiceSettings.tsx",
-    "DreamSettings.tsx",
-    "DeepSeekSettings.tsx",
-    "BanzhuanSettings.tsx",
-    "SettingRow.tsx",
-    "Toggle.tsx",
-  ]) {
-    check(`整机设置页组件已删除：${gone}`, !existsSync(join(settingsDir, gone)));
-  }
-  check("KeyPrompt 保留（用户明确要求）", existsSync(join(settingsDir, "KeyPrompt.tsx")));
-  // Select 是**共享**原语（FileViewer 的 LogView 也用它），删设置页时不能顺手删掉。
-  check("Select 保留（它不是设置页独占的：LogView 也在用）", existsSync(join(settingsDir, "Select.tsx")));
+  const uiText = readFileSync(join(root, "src", "client", "ui.ts"), "utf8");
+  check("界面层不再有 HertaFullView", !uiText.includes("HertaFullView"));
+  check("界面层不再有 iframe 语音出口", !uiText.includes("registerVoiceSink"));
 
-  const appText = readFileSync(join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "App.tsx"), "utf8");
-  check("App.tsx 不再渲染 SettingsModal", !appText.includes("SettingsModal"));
-  check("App.tsx 不再持有 settingsOpen", !appText.includes("settingsOpen"));
-  const sidebarText = readFileSync(join(root, "..", "Herta-src", "packages", "gui", "src", "renderer", "components", "Sidebar", "Sidebar.tsx"), "utf8");
-  check("侧栏不再有设置入口按钮", !sidebarText.includes("sidebar-settings\""));
-  check("侧栏不再接收 onOpenSettings", !sidebarText.includes("onOpenSettings"));
+  const voiceText = readFileSync(join(root, "src", "client", "voice.ts"), "utf8");
+  check("语音层不再有 iframe 分支", !voiceText.includes("voiceSinkWindow") && !voiceText.includes("pushVoiceToFrame"));
 }
 
 // ── 7. 凭据缝的取法是实测出来的，不许改回去（防回归）────────────────────────

@@ -21,7 +21,7 @@ import { TTS_ARCHIVE_BYTES, TTS_BUNDLE_BYTES } from "./tts-release.js";
 import { probeTtsRuntime } from "./tts-runtime.js";
 import { createVoiceModelService, voiceModelStoreRoot } from "./voice-model.js";
 
-/** 挂载前缀。与 `/herta-voice`（静态资产）、`/herta-settings`（偏好）并列。 */
+/** 挂载前缀。与 `/herta-voice`（静态资产）等宿主自持端点并列。 */
 export const HERTA_VOICE_MODEL_ROUTE = "/herta-voice-model";
 
 /** 请求体只有一个小动作名，超过这个长度一定是别的东西。 */

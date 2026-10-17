@@ -1,5 +1,5 @@
 /**
- * 「黑塔」设置的**字段表** —— 纯数据 + 纯函数，无 IO、无 import。
+ * 「Herta」设置的**字段表** —— 纯数据 + 纯函数，无 IO、无 import。
  *
  * ## 这份文件解决的问题
  *
@@ -12,9 +12,9 @@
  * 上一版还额外做一件事：把用户改过的值**写回整机读的那两份 settings.json**。
  * 那件事已整体删除，原因是一条实测事实 ——
  *
- *   · 嵌在 DSH 里的整机（`herta-full` 页签的 iframe）**从来不读那些文件**：
- *     它的每一个设置都经 postMessage bridge 向父窗口要，父窗口再读
- *     `ctx.configForms.get("herta")`。也就是说「唯一真相」早就只有一份。
+ *   · 当年内嵌在 DSH 里的整机（甲方案，`herta-full` 页签，2026-10-17 已删除）
+ *     **从来不读那些文件**：它的每一个设置都经 postMessage bridge 向父窗口要，
+ *     父窗口再读 `ctx.configForms.get("herta")`。也就是说「唯一真相」早就只有一份。
  *   · 读那两份文件的是**独立安装的 Herta.exe**，而它已判定不再维护。
  *
  * 于是同时失去读者的还有：首次种子迁移、`followedFields` 声明、页面上每项的
@@ -23,10 +23,11 @@
  *
  * ## 一个必须写在字段旁边的字段：`wired`
  *
- * 她的设置页是**大部分 bridge getter 唯一的消费者**。删掉那一页之后，
- * 逐个查过残留消费方，结论并不整齐（见每个字段的注释）：
+ * 她的设置页是**大部分 bridge getter 唯一的消费者**。删掉那一页、随后又删掉
+ * 整机视图之后，逐个查过残留消费方，结论并不整齐（见每个字段的注释）：
  *
- *   · `wired: true`  —— 整机里真有人读它，改了就有效果；
+ *   · `wired: true`  —— 插件里真有人读它（宿主合成链路或浏览器播放链路），
+ *     改了就有效果；
  *   · `wired: false` —— **没有任何代码读它**。这些字段仍然保留（用户要的），
  *     但页面把它们收进「暂未接线」一组并逐行标注。留着它们不等于假装能用 ——
  *     恰恰相反：`note` 就是「谁该读它、现在缺什么」的备忘。
@@ -43,16 +44,17 @@
  *
  * ## 两个「absent 有语义」的字段
  *
- * 整机把两件事编码成「键不存在」，而不是某个具体值：
+ * 上游桌面应用把两件事编码成「键不存在」，而不是某个具体值：
  *   · `locale` —— 缺失 = **跟随系统语言**
  *   · `interactionLanguage` —— 缺失 = **follow**（跟随 UI 语言）
  * 所以这两个字段的默认值分别是 `""` 与 `"follow"`。把它们写成 `zh` 会把
  * 「跟随系统」变成「钉死在中文」——那不是同一个语义。
- * （它们现在都只喂给整机那条 bridge；整机怎么解释「缺席」仍由整机决定。）
+ * （两者现在都没有消费方：`locale` 原先只喂整机 bridge，随整机视图一起删除；
+ * `interactionLanguage` 的消费方更早就没了。）
  *
  * ## 不搬的东西（连同理由，免得下一个人重新论证一遍）
  *
- *   · `windowState` —— 整机自己按 debounce 捕获窗口几何并在关闭时写一次，
+ *   · `windowState` —— 上游桌面应用自己按 debounce 捕获窗口几何并在关闭时写一次，
  *     没有任何设置行读写它。搬进来必然互相覆盖。
  *   · `minimaxVoice` —— 服务端签发的克隆记录，属**机器状态**而不是用户偏好，所以
  *     它不进这份字段表。2026-09-27 接上云端语音之后**这一点没有变**：变的是另一件
@@ -70,7 +72,7 @@
  *
  *   · 全局：`Herta-src/packages/gui/src/main/app-global-settings.ts:130-171` 逐字段手写校验
  *   · 工作区：`Herta-src/packages/gui/src/main/app-settings.ts:15-81` 的值表与判定函数
- *   · 默认值：整机的 IPC getter 与渲染层各自的默认（见每个字段的注释）
+ *   · 默认值：上游桌面应用的 IPC getter 与渲染层各自的默认（见每个字段的注释）
  */
 
 /**
@@ -94,7 +96,7 @@
 export const SETTINGS_NAMESPACE = "herta";
 
 /**
- * 字段表。`def` 必须与整机那边的默认值逐字一致 —— 不一致的后果是
+ * 字段表。`def` 必须与上游桌面应用的默认值逐字一致 —— 不一致的后果是
  * 「DSH 里显示的值」与「她实际在用的值」不同，而那是这个功能最不该出的错。
  *
  * 字段形状 —— **一个字段一个描述符**，它怎么校验、怎么展示、归哪一组都在这里：
@@ -103,7 +105,7 @@ export const SETTINGS_NAMESPACE = "herta";
  *   · `min` / `max` / `step` —— 仅 number
  *   · `def`   —— 默认值
  *   · `label` —— 页面上的标签
- *   · `wired` —— 整机里有没有人读它（缺省视为 true）
+ *   · `wired` —— 插件里有没有人读它（缺省视为 true）
  *   · `note`  —— 仅 `wired: false`：它本该由谁读、现在缺什么
  *   · `group` —— 仅活字段：落在哪一组（组标题须在下面 `GROUP_DECLARATION` 里声明）
  *   · `hint`  —— 标签下方那行「它是什么」
@@ -132,7 +134,6 @@ export const SETTINGS_NAMESPACE = "herta";
  *
  * 为什么住在这里：这份文件是「字段表」，而 `voiceEngine` 的取值域本来就是它的字段定义。
  * 本文件**不许 import**（纯数据 + 纯函数），所以只能由别处向这里取 —— 方向是单向的：
- *   · `voice-settings-shared.js` 的 `VOICE_ENGINES` —— 从这儿派生（对外名字不变）；
  *   · `minimax/pipeline.ts` 的 `speaksFor()` —— 哪几档会真的出声；
  *   · `synth-registry.js` 的回落表 —— 哪一档失败之后换哪一档（见 ADR-0005）。
  * 加一档：**只动这里** + 写一个 adapter 工厂，别再抄第二遍。
@@ -142,17 +143,18 @@ export { VOICE_ENGINES };
 
 export const FIELDS = Object.freeze({
   /**
-   * UI 外壳语言。`""` = 跟随系统（整机把「缺失」编码成这个语义）。
-   * 消费者：`Herta-src .../renderer/App.tsx` 启动时 `bridge.getLocale()`。
+   * UI 外壳语言。`""` = 跟随系统（上游桌面应用把「缺失」编码成这个语义）。
+   * 消费者：无 —— 原消费方是整机视图的 `getLocale` 应答器（随整机一起删除）。
    */
   locale: Object.freeze({
     kind: "enum",
     values: Object.freeze(["", "zh", "en"]),
     def: "",
     label: "界面语言",
-    group: "界面",
+    wired: false,
+    note: "当前没有消费方：原来只有整机视图的 bridge 应答器读它，那个视图已经删除。将来要接，应接在 DSH 自己的界面语言上。",
     enumLabels: Object.freeze({ "": "跟随系统", zh: "中文", en: "English" }),
-    hint: "整机界面自己的语言。「跟随系统」= 不写这个键，按操作系统语言解析。",
+    hint: "上游桌面应用的界面语言。「跟随系统」= 不写这个键，按操作系统语言解析。",
   }),
   /**
    * 她被提示的语言。与 `locale` 独立，任意组合都合法。`follow` = 跟随 UI 语言。
@@ -164,12 +166,12 @@ export const FIELDS = Object.freeze({
     def: "follow",
     label: "对话语言",
     wired: false,
-    note: "整机当前不读它：原来只有她自己的设置页在读写这个键。将来要接，应接在会话创建时的提示词语言上。",
+    note: "当前不读它：原来只有她自己的设置页在读写这个键（整机视图已删除）。将来要接，应接在会话创建时的提示词语言上。",
     enumLabels: Object.freeze({ follow: "跟随界面", zh: "中文", en: "English" }),
     hint: "她被提示用哪种语言说话。",
   }),
   /**
-   * 外观。整机默认 `"system"`。
+   * 外观。上游桌面应用默认 `"system"`。
    *
    * **DSH 侧没有消费方**（2026-09-30 体检核实）：`getTheme` 返回的是 DSH 外壳自己的
    * 颜色（`document.documentElement.style.colorScheme`），这个字段本身全仓没有被读。
@@ -181,24 +183,24 @@ export const FIELDS = Object.freeze({
     def: "system",
     label: "主题",
     wired: false,
-    note: "主题由 DSH 外壳自己管（设置页这一行改了不影响界面）。整机那边才由 initTheme 读它。",
+    note: "主题由 DSH 外壳自己管（设置页这一行改了不影响界面）。原来读它的是整机那边的 initTheme，那个视图已删除。",
     enumLabels: Object.freeze({ system: "跟随系统", light: "浅色", dark: "深色" }),
-    hint: "整机界面的明暗。",
+    hint: "上游桌面应用界面的明暗。",
   }),
   /**
-   * 点关闭是收进托盘还是退出。整机默认 `true`。
-   * 消费者：无 —— 窗口与托盘是 Electron 主进程的事，iframe 里根本没有窗口。
+   * 点关闭是收进托盘还是退出。上游桌面应用默认 `true`。
+   * 消费者：无 —— 窗口与托盘是 Electron 主进程的事，插件里没有窗口。
    */
   closeToTray: Object.freeze({
     kind: "boolean",
     def: true,
     label: "关闭时收进托盘",
     wired: false,
-    note: "iframe 里没有窗口可收，DSH 也没有她的托盘图标。原来只有她自己的设置页读它。",
+    note: "插件里没有窗口可收，DSH 也没有她的托盘图标。原来只有她自己的设置页读它。",
     hint: "点窗口关闭时收进托盘还是退出。",
   }),
   /**
-   * 自动检查更新。整机默认 `true`。
+   * 自动检查更新。上游桌面应用默认 `true`。
    * 消费者：无 —— 更新是 electron-updater 在主进程里做的事，仅独立版存在。
    */
   autoUpdate: Object.freeze({
@@ -206,23 +208,23 @@ export const FIELDS = Object.freeze({
     def: true,
     label: "自动检查更新",
     wired: false,
-    note: "更新由 electron-updater 在主进程完成，只有独立版有；DSH 不负责更新整机。",
+    note: "更新由 electron-updater 在主进程完成，只有独立版有；DSH 不负责更新桌面应用。",
     hint: "自动检查更新。",
   }),
   /**
-   * 3D 设备卡。整机默认 `true`（`DEVICE_SCENE_DEFAULT`）。
+   * 3D 设备卡。上游桌面应用默认 `true`（`DEVICE_SCENE_DEFAULT`）。
    *
-   * **DSH 侧没有消费方**（2026-09-30 体检核实）：父窗口的 postMessage 分发里没有
+   * **DSH 侧没有消费方**（2026-09-30 体检核实）：原父窗口的 postMessage 分发里没有
    * `getDeviceScene` / `setDeviceScene` 分支（未命中会回一句「整机视图还没有实现」），
-   * iframe 侧的能力探测（`setDeviceScene !== undefined`）恒为 false，所以这张卡永远
-   * 起不来。以前它挂在正常分组里、改了没反应。
+   * 那张卡永远起不来。以前它挂在正常分组里、改了没反应；bridge 随整机视图一起删除后
+   * 更没有任何读者。
    */
   deviceScene: Object.freeze({
     kind: "boolean",
     def: true,
     label: "3D 设备卡",
     wired: false,
-    note: "DSH 侧没有这条路：父窗口没有 get/setDeviceScene 分支，整机视图也还没实现。",
+    note: "DSH 侧没有这条路：原父窗口没有 get/setDeviceScene 分支，那个分支随整机视图一起删除。",
     hint: "差分协处理器页上的 3D 设备卡。",
   }),
   /**
@@ -333,8 +335,8 @@ export const FIELDS = Object.freeze({
    * 助手的回复就**不再自动送去合成**（也就不再花钱）；`herta_say` 是明确要求
    * "说一句"，**不受它管**。设置页的「试听」同样不受它管（用户是明确要求现在出声）。
    *
-   * 注意它管的是"自动"这一条，不是"能不能出声"：整机那边的静音/音量仍由
-   * `voiceMuted` / `voiceVolume` 经 bridge 下发给播放器。
+   * 注意它管的是"自动"这一条，不是"能不能出声"：静音/音量是 `voiceMuted` /
+   * `voiceVolume`，由浏览器播放链路直接读。
    */
   realtimeVoice: Object.freeze({
     kind: "boolean",
@@ -345,7 +347,7 @@ export const FIELDS = Object.freeze({
     hint: "「自动念回复」的总开关。关掉就不再自动把回复送去合成（不再花钱）；herta_say 与「试听」不受它管。",
   }),
 
-  /** 主语音静音。整机默认 `false`（原来存在渲染层 localStorage）。 */
+  /** 主语音静音。默认 `false`（原来存在渲染层 localStorage）。 */
   voiceMuted: Object.freeze({
     kind: "boolean",
     def: false,
@@ -354,8 +356,8 @@ export const FIELDS = Object.freeze({
     hint: "关掉她所有的语音播放。立刻生效。",
   }),
   /**
-   * 主音量，0–100（整机内部是 0–1，bridge 上换算）。
-   * 整机默认 `100`（原来存在渲染层 localStorage）。
+   * 主音量，0–100（上游桌面应用内部是 0–1，浏览器播放时换算）。
+   * 默认 `100`（原来存在渲染层 localStorage）。
    */
   voiceVolume: Object.freeze({
     kind: "number",
@@ -520,55 +522,55 @@ export const FIELDS = Object.freeze({
     label: "同步到工作区",
     wired: false,
     note: "上一版用它决定「写回哪个工作区的 .herta\\settings.json」。写回已整体删除，所以它现在只被存下来。",
-    hint: "整机的工作区根目录（绝对路径）。",
+    hint: "上游桌面应用的工作区根目录（绝对路径）。",
   }),
 
   /**
-   * 「做梦」。整机默认 `true`。
-   * 消费者：无 —— 原来只有她自己的设置页读它；做梦由整机自己的服务跑（仅独立版）。
+   * 「做梦」。上游桌面应用默认 `true`。
+   * 消费者：无 —— 原来只有她自己的设置页读它；做梦由桌面应用自己的服务跑（仅独立版）。
    */
   dreamEnabled: Object.freeze({
     kind: "boolean",
     def: true,
     label: "做梦",
     wired: false,
-    note: "做梦是整机自己的后台服务（独立版才有），DSH 会话里没有这条链路。",
+    note: "做梦是独立版桌面应用自己的后台服务，DSH 会话里没有这条链路。",
     hint: "她空闲时自己写废案。",
   }),
-  /** 板砖的推理档位。整机默认 `"high"`。消费者：无（同上，属独立版后端）。 */
+  /** 板砖的推理档位。独立版默认 `"high"`。消费者：无（同上，属独立版后端）。 */
   backendThinking: Object.freeze({
     kind: "enum",
     values: Object.freeze(["low", "high", "max"]),
     def: "high",
     label: "推理档位",
     wired: false,
-    note: "板砖是整机独立版的后端；DSH 会话走 DSH 自己的模型配置。",
+    note: "板砖是独立版桌面应用的后端；DSH 会话走 DSH 自己的模型配置。",
     enumLabels: Object.freeze({ low: "low", high: "high", max: "max" }),
     hint: "板砖的推理档位。",
   }),
-  /** 板砖的工具契约。整机默认 `"minimal"`。消费者：无（同上）。 */
+  /** 板砖的工具契约。独立版默认 `"minimal"`。消费者：无（同上）。 */
   backendContract: Object.freeze({
     kind: "enum",
     values: Object.freeze(["standard", "minimal"]),
     def: "minimal",
     label: "工具契约",
     wired: false,
-    note: "板砖是整机独立版的后端；DSH 会话走 DSH 自己的模型配置。",
+    note: "板砖是独立版桌面应用的后端；DSH 会话走 DSH 自己的模型配置。",
     enumLabels: Object.freeze({ standard: "standard", minimal: "minimal" }),
     hint: "板砖的工具契约。",
   }),
-  /** 黑塔本体的模型。整机默认 `"deepseek-v4-pro"`。消费者：无（同上）。 */
+  /** Herta 本体的模型。独立版默认 `"deepseek-v4-pro"`。消费者：无（同上）。 */
   modelsActor: Object.freeze({
     kind: "enum",
     values: Object.freeze(["deepseek-v4-pro", "deepseek-flash"]),
     def: "deepseek-v4-pro",
-    label: "黑塔的模型",
+    label: "Herta 的模型",
     wired: false,
     note: "DSH 里她的模型由会话自己的模型配置决定，这个键只有独立版的后端会读。",
     enumLabels: Object.freeze({ "deepseek-v4-pro": "V4 Pro", "deepseek-flash": "V4.1 Flash" }),
-    hint: "驱动黑塔说话的模型。",
+    hint: "驱动 Herta 说话的模型。",
   }),
-  /** 板砖的模型。整机默认 `"deepseek-flash"`。消费者：无（同上）。 */
+  /** 板砖的模型。独立版默认 `"deepseek-flash"`。消费者：无（同上）。 */
   modelsBackend: Object.freeze({
     kind: "enum",
     values: Object.freeze(["deepseek-v4-pro", "deepseek-flash"]),
@@ -597,7 +599,6 @@ export const FIELD_NAMES = Object.freeze(Object.keys(FIELDS));
  * 先选，再看状态。
  */
 const GROUP_DECLARATION = Object.freeze([
-  Object.freeze({ title: "界面" }),
   Object.freeze({
     title: "语音",
     hint: "这四个值都是宿主真在读的，改完立刻生效。静音只决定「听不听得见」，不决定要不要花钱合成。",
@@ -674,7 +675,7 @@ export const DEFAULTS = Object.freeze(
   Object.fromEntries(FIELD_NAMES.map((name) => [name, FIELDS[name].def])),
 );
 
-/** 整机里真有人读的字段名。页面把其余的收进「暂未接线」。 */
+/** 插件里真有人读的字段名。页面把其余的收进「暂未接线」。 */
 export const WIRED_FIELD_NAMES = Object.freeze(FIELD_NAMES.filter((n) => FIELDS[n].wired !== false));
 
 /** 声明了「暂时没有消费方」的字段名。 */
@@ -688,7 +689,7 @@ export function isFieldName(name) {
 /**
  * 一个值是不是该字段的合法取值。
  *
- * 布尔字段只认真正的 `boolean`（`"true"` 不算）—— 与整机自己的校验同口径。
+ * 布尔字段只认真正的 `boolean`（`"true"` 不算）—— 与上游桌面应用的校验同口径。
  *
  * @param {string} name - 字段名。
  * @param {unknown} value - 待判定的值。
@@ -715,7 +716,7 @@ export function isManagedValue(name, value) {
 /**
  * 把任意来源的对象归一成**完整**的设置值：非法或缺席一律回落默认。
  *
- * 永不抛错，也永不返回缺键的对象 —— 调用方（页面、bridge 应答）不该再判 undefined。
+ * 永不抛错，也永不返回缺键的对象 —— 调用方（页面、语音层）不该再判 undefined。
  *
  * @param {unknown} raw - 来自 Config 或快照的任意值。
  * @returns {Record<string, unknown>} 每个字段都有值的对象。

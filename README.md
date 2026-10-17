@@ -1,6 +1,6 @@
 # dsh-herta
 
-把 **Herta（黑塔）** 作为一个插件装进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)：
+把 **Herta** 作为一个插件装进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)：
 她的人格、她的记忆、她的声音、她的界面。
 
 > ## 📌 来源声明
@@ -44,12 +44,12 @@
 
 四层，各自独立可验：
 
-| 层         | 内容                                                                 | 落在哪                 |
-| ---------- | -------------------------------------------------------------------- | ---------------------- |
-| **A 身份** | `HertaBio.txt` 逐字作人格前缀 + 为 DSH 改写的处境/纪律               | agent preset           |
-| **B 记忆** | 记忆货架（`.herta/narrative/`）作动态提示词段；四个记忆/做梦工具     | preset 行              |
-| **C 语音** | 80 条她本人的 `.opus`（开场白 / 语气词 / 自我收回 / 彩蛋）+ 发声工具 | 静态路由 + client      |
-| **D 界面** | **乙**：用她的展示组件渲染 DSH 会话；**甲**：iframe 装下她的整机     | `conversation.view` ×2 |
+| 层         | 内容                                                                 | 落在哪              |
+| ---------- | -------------------------------------------------------------------- | ------------------- |
+| **A 身份** | `HertaBio.txt` 逐字作人格前缀 + 为 DSH 改写的处境/纪律               | agent preset        |
+| **B 记忆** | 记忆货架（`.herta/narrative/`）作动态提示词段；四个记忆/做梦工具     | preset 行           |
+| **C 语音** | 80 条她本人的 `.opus`（开场白 / 语气词 / 自我收回 / 彩蛋）+ 发声工具 | 静态路由 + client   |
+| **D 界面** | 用她的展示组件渲染 DSH 会话                                          | `conversation.view` |
 
 ---
 
@@ -58,11 +58,11 @@
 **面向 DSH `0.1.7-rc.2` 起（`0.2.1-rc.2` 实测）。** 下面三处是 0.1.5 → 0.1.7 之间
 的**破坏性 API 变更**（都是实测出来的，不是猜的）：
 
-| 变了什么                           | 0.1.5 时的写法                                                                       | 0.1.7 的现状                                                                                                                                                                                                                                                                                | 本仓库怎么办                                                                                                                                                                                                                                   |
-| ---------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **agent preset 的载体**            | `$DSH_HOME/.agent-presets/<name>/agent.cordis.yml`（一整棵 cordis 树）+ `preset.yml` | 该目录机制**整个移除**（运行时里已无任何代码引用 `.agent-presets`）；preset 变成一条 `@deepseek-ai/dsh-agent-preset` loader 行，官方写成 `dsh-web-app/presets/*.patch.yml`                                                                                                                  | 生成 `preset/herta.patch.yml`，作为**第二条 bundle patch** 随插件一起装（`dsh.bundle.patch` 现在可以是数组）                                                                                                                                   |
-| **用户偏好的存放（设置域）**       | 宿主 `ctx.settings.register(ns, schema)` + 客户端 `settingsScope.bind({namespace})`  | 两者**一起消失**：`SettingsProvider`/`SettingsScope`/`SettingsRegisterOptions` 不再导出，客户端 `settingsScope` 服务不存在，事件 `settings/updated`、`settings/document-updated` 也没了；换成基于插件 Config 的 `SettingsForms`/`configForms`，**没有第三方命名空间入口**                   | 用后者：插件自己的 volatile `Config`（落 profile 的 `cordis.patch.yml`），客户端挂 `settings.section` 一页。密钥另走凭据缝 `ctx.remote.credentials`（值进 `$DSH_HOME/.credentials.yaml`，不进明文配置）。2026-09-26 起**黑塔的设置只有这一处** |
-| **消息来源的 kind（会话格式 v4）** | `{ kind: "plugin", plugin: "dsh-herta" }`                                            | v4 只认「生产者自有 kind」，`kind: "plugin"` 在**写入会话时**就被 `assertV4SourceRowAdmission` 拒绝（`format v4 message requires a producer-owned source kind`）；第三方插件的合法形状是 `{ kind: "plugin:<包名>" }` —— 这正是 DSH 自己的 v3→v4 迁移为旧行推导出的形状，两代读回同一个 kind | 全部改成 `{ kind: "plugin:dsh-herta" }`（`agent.steer` 两处 + 两个 `PLUGIN_SOURCE`）；新增 `scripts/test-source-kind.mjs` 钉住这条不变量                                                                                                       |
+| 变了什么                           | 0.1.5 时的写法                                                                       | 0.1.7 的现状                                                                                                                                                                                                                                                                                | 本仓库怎么办                                                                                                                                                                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **agent preset 的载体**            | `$DSH_HOME/.agent-presets/<name>/agent.cordis.yml`（一整棵 cordis 树）+ `preset.yml` | 该目录机制**整个移除**（运行时里已无任何代码引用 `.agent-presets`）；preset 变成一条 `@deepseek-ai/dsh-agent-preset` loader 行，官方写成 `dsh-web-app/presets/*.patch.yml`                                                                                                                  | 生成 `preset/herta.patch.yml`，作为**第二条 bundle patch** 随插件一起装（`dsh.bundle.patch` 现在可以是数组）                                                                                                                                     |
+| **用户偏好的存放（设置域）**       | 宿主 `ctx.settings.register(ns, schema)` + 客户端 `settingsScope.bind({namespace})`  | 两者**一起消失**：`SettingsProvider`/`SettingsScope`/`SettingsRegisterOptions` 不再导出，客户端 `settingsScope` 服务不存在，事件 `settings/updated`、`settings/document-updated` 也没了；换成基于插件 Config 的 `SettingsForms`/`configForms`，**没有第三方命名空间入口**                   | 用后者：插件自己的 volatile `Config`（落 profile 的 `cordis.patch.yml`），客户端挂 `settings.section` 一页。密钥另走凭据缝 `ctx.remote.credentials`（值进 `$DSH_HOME/.credentials.yaml`，不进明文配置）。2026-09-26 起**Herta 的设置只有这一处** |
+| **消息来源的 kind（会话格式 v4）** | `{ kind: "plugin", plugin: "dsh-herta" }`                                            | v4 只认「生产者自有 kind」，`kind: "plugin"` 在**写入会话时**就被 `assertV4SourceRowAdmission` 拒绝（`format v4 message requires a producer-owned source kind`）；第三方插件的合法形状是 `{ kind: "plugin:<包名>" }` —— 这正是 DSH 自己的 v3→v4 迁移为旧行推导出的形状，两代读回同一个 kind | 全部改成 `{ kind: "plugin:dsh-herta" }`（`agent.steer` 两处 + 两个 `PLUGIN_SOURCE`）；新增 `scripts/test-source-kind.mjs` 钉住这条不变量                                                                                                         |
 
 > ⚠️ 第三处症状最难定位：被拒的事件**根本没进会话日志**（写入前就抛了），
 > 事后翻 `session.v4.jsonl.zstd` 是干净的，只有 GUI 上显示「本轮运行失败」。
@@ -85,10 +85,9 @@ working-directory 服务作为 runtime context 注入，没有丢。preset 底�
 >
 > 1. `dsh --profile <p> --dump-config` → 应有 `- id: preset-herta`，且其 `config.plugins` 末尾有 `plane: preset`
 > 2. 启动日志 → 应有 `plane=host`、`plane=preset`、`叙述层依赖就绪`、
->    `设置命名空间已就绪：herta（自带页面，不自动生成）`、`整机页面已挂：/herta-ui`，
->    **不应**出现 `settings.register is not a function`，也不应再出现
->    `从整机迁移设置：…`（种子已删除）或 `设置写回已挂`（写回已删除）
-> 3. `npm test` → 1556 项（31 组）；`npm run test:integration` → 28 项
+>    `设置命名空间已就绪：herta（自带页面，不自动生成）`，
+>    **不应**出现 `settings.register is not a function`
+> 3. `npm test` → 1463 项（30 组）；`npm run test:integration` → 28 项
 
 ---
 
@@ -201,11 +200,11 @@ node scripts\install-web.mjs --profile desktop
 一个字都不念。以前这里**连原因都不显示**（2026-09-30 体检后已修：失败原因会写在
 设置页那一行上）。五步：
 
-1. **打开设置**：DSH 设置 ▸ 黑塔 ▸ 「语音」组。
+1. **打开设置**：DSH 设置 ▸ Herta ▸ 「语音」组。
 2. **二选一**（要么下模型、要么填密钥）：
-   - **本地模型**（不花钱、不联网）：到「整机动作」组点「本地语音模型」的**下载**，
+   - **本地模型**（不花钱、不联网）：到「本地语音」组点「本地语音模型」的**下载**，
      约 72.7 MiB，装到 `$DSH_HOME/tts/herta-best-e72`；然后在「语音引擎」里选
-     `本地模型`。**只有 GitHub 这一个源**（被墙时那个「安装包网盘」里**没有**模型）。
+     `本地模型`。**只有 GitHub 这一个源**。
    - **云端**：「密钥」组里填 MiniMax 或 Fish 的密钥，再把「语音引擎」切到那一档。
      ⚠️ **MiniMax 只「认领」你账号上已有的克隆音色，不做上传/克隆** —— 新账号上还没有
      那个克隆时，**填了密钥也不会出声**。
@@ -228,12 +227,12 @@ node scripts\install-web.mjs --profile desktop
 
 ### 这个包同时挂在两个平面上，两件事不同
 
-|            | profile bundle 行（宿主面）                                            | preset 行（agent 面）                                                                                                                 |
-| ---------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| 干什么     | 让 client 半侧进浏览器启动图 + 挂四条路由（语音 / 偏好 / 模型 / 整机） | 注册她的提示词段与五个工具                                                                                                            |
-| 为什么不换 | `dsh-client-modules` 只扫 `loader.entries()`，preset 子树不在其中      | 放宿主面会把工具泄漏给**所有**会话                                                                                                    |
-| 怎么区分   | 行上没有 `config`                                                      | 行上带 `config: { plane: preset }`                                                                                                    |
-| 住在哪     | 包自带的 `cordis.patch.yml`                                            | 包自带的 `preset/herta.patch.yml`（0.1.7 起 preset 就是一条普通 loader 行；旧版的 `$DSH_HOME/.agent-presets/` 目录机制已被 DSH 移除） |
+|            | profile bundle 行（宿主面）                                                        | preset 行（agent 面）                                                                                                                 |
+| ---------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 干什么     | 让 client 半侧进浏览器启动图 + 挂四条路由（语音 / 模型 / MiniMax 事件 / 认领状态） | 注册她的提示词段与七个工具                                                                                                            |
+| 为什么不换 | `dsh-client-modules` 只扫 `loader.entries()`，preset 子树不在其中                  | 放宿主面会把工具泄漏给**所有**会话                                                                                                    |
+| 怎么区分   | 行上没有 `config`                                                                  | 行上带 `config: { plane: preset }`                                                                                                    |
+| 住在哪     | 包自带的 `cordis.patch.yml`                                                        | 包自带的 `preset/herta.patch.yml`（0.1.7 起 preset 就是一条普通 loader 行；旧版的 `$DSH_HOME/.agent-presets/` 目录机制已被 DSH 移除） |
 
 两个实例的 `apply` 都会跑（模块只求值一次，fiber 是两个），所以**模块级可变状态
 必须与平面无关或按 key 索引** —— 缓存按 cwd 索引就是这个原因。
@@ -243,31 +242,13 @@ preset 行现在**启动期就挂**（0.1.7 实测：冷启动日志里 `plane=h
 两种都正常，但**别拿「没看到 plane=preset」当插件没装上的证据**，以 `--dump-config`
 为准。
 
-### 两条界面路线
+### 界面：一条路线
 
-**乙**（`conversation.view` id `herta`）—— 用她的展示组件渲染 DSH 会话。数据走
-`ctx.uiConversation.binding(sessionId).target('chat')`，组件拿到的是 DSH 的
+**`conversation.view`（id `herta`，页签显示 Herta）** —— 用她的展示组件渲染 DSH 会话。
+数据走 `ctx.uiConversation.binding(sessionId).target('chat')`，组件拿到的是 DSH 的
 `ConversationNode[]`，映射成她的气泡。样式挂进 **shadow root**：她原版样式表的
 `:root` 变量在 shadow 里不匹配任何元素，所以构建期把 `:root` 转成 `:host`、
 删掉整页 chrome（见 `scripts/build.mjs`）。
-
-**甲**（`conversation.view` id `herta-full`，页签显示「黑塔·整机」）—— iframe 装下她的整机（`/herta-ui/`）。
-iframe 是**独立文档**，所以她的原版样式**原样使用**（`:root` / `body` 整页规则在这里
-正好是对的）。数据经 postMessage bridge 从父窗口取；bridge 会把每个调用的**最后一条
-载荷缓存下来补给新订阅者** —— 不这么做，早期那次 reset 会在渲染层订阅之前丢掉，
-现象是「界面起来了但会话是空的，而且不会恢复」。
-
-**整机页要去掉两处「宿主已经有的 chrome」**（都落在薄层 `src/herta-ui/herta-ui.css`，
-两条规则，上游 `Herta-src/` 一行没动）：
-
-| 去掉的                                         | 为什么                                                                                                                       |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `.composer`（她自己的输入框）                  | DSH 底部本来就有一整套输入区，两套并存；且她那套走 `bridge.submitText`，而 bridge **没实现**这个方法，发出去的话只会丢在地上 |
-| `.window-controls`（右上角最小化/最大化/关闭） | 三个都是**死按钮** —— bridge 把它们全实现成空函数（iframe 里也没有「窗口」可最小化，该最小化的是外层 DSH 窗口）              |
-
-两处都只圈元素自己的 class、不碰父级，所以布局自动让位：`.workspace` 的
-`grid-template-rows:1fr auto` 里那个 `auto` 行会跟着子项自己塌，对话区直接长满
-（实测 452px → 512px），不留空档也不出双重滚动条。
 
 ### 叙述调度层（她的「自我叙述」）
 
@@ -296,7 +277,7 @@ iframe 是**独立文档**，所以她的原版样式**原样使用**（`:root` 
 | ------------------------------ | ------------------------------------------------------------------------- | ------------- |
 | **分拍**（干活中途补一句点评） | `tools/result` → 判据 → `agent.steer`                                     | 否            |
 | **自我收回 / supervisor 复核** | `agent/turn-stopping`（turn 关闭前被 await）→ 独立复核 → `steer` 让她重说 | **是**        |
-| **thought tag**                | 输出里的围栏，由渲染层（乙 / 甲）呈现                                     | 否            |
+| **thought tag**                | 输出里的围栏，由渲染层呈现                                                | 否            |
 | **做梦蒸馏**                   | `herta_dream` 的 `distill: true` → 宿主另起调用蒸馏候选 → 过门 → 落账     | **是**        |
 
 三条安全底线（缺一条都会出真问题）：**任何失败一律放行**（复核坏了不该让她说不出话）/
@@ -307,15 +288,14 @@ iframe 是**独立文档**，所以她的原版样式**原样使用**（`:root` 
 > 不像上游能在后端事件发生当拍插话。所以分拍是「事件后一个 step 补评」——
 > 效果等价，时机晚一拍。
 
-### 六条路由
+### 四条路由
 
-前两条是**白名单静态资源**：启动时扫出文件索引，请求路径必须命中，否则 404。
+一条是**白名单静态资源**：启动时扫出文件索引，请求路径必须命中，否则 404。
 不存在路径穿越的可能，也就不需要 `../` 过滤这类容易写错的代码。
 
 - `/herta-voice` —— 80 条语音 + 代码生成的 `index.json`
-- `/herta-ui` —— 整机页面（html / js / css / 开场段 / pdf worker）
 
-后三条不是静态资源，是宿主自持的读写端点：
+其余三条不是静态资源，是宿主自持的读写端点：
 
 - `/herta-voice-model` —— 本地语音模型（离线 TTS）的下载。
   `GET` 状态、`POST {"action":"download"|"cancel"|"remove"}` **点火即返回**，
@@ -324,8 +304,8 @@ iframe 是**独立文档**，所以她的原版样式**原样使用**（`:root` 
   详见下一节。
 - `/herta-minimax-events` —— **SSE**：MiniMax 云端语音的 PCM 推给浏览器半侧。
   三种帧：`tts`（一个单元的 `Int16` PCM，base64）/ `ttsStop` / `state`。
-  浏览器半侧转成 `push("voice", …)` 交给整机 iframe（iframe 缺席时自己在父窗口用
-  WebAudio 放）。走自建 SSE 而不是 DSH 的事件通道，理由见下一条注释。
+  浏览器半侧用 **WebAudio 在父窗口播放**（不再有 iframe 转发那条路）。走自建 SSE
+  而不是 DSH 的事件通道，理由见下一条注释。
 - `/herta-minimax-state` —— 认领状态 + 手动动作：
   `GET` 快照，`POST {"action":"adopt"|"reset"}`（设置页「重新认领」按钮）。
 
@@ -343,7 +323,7 @@ iframe 是**独立文档**，所以她的原版样式**原样使用**（`:root` 
 
 ## 本地语音模型（离线 TTS 的模型那半）
 
-DSH 设置 ▸ 黑塔 ▸ 整机动作 里的「下载」现在是真的：宿主会去上游发布的地址取那一个归档。
+DSH 设置 ▸ Herta ▸ 本地语音 里的「下载」现在是真的：宿主会去上游发布的地址取那一个归档。
 
 **固定参数从上游扒来，钉在代码里**（`src/host/tts-release.js`）——不是运行时问服务端：
 
@@ -381,9 +361,8 @@ and therefore an app release: the download never trusts the host, only this file
 > 非 ASCII 绝对路径，而本机路径里就有中文 —— worker `chdir` 到模型根再传相对
 > 路径，与上游同一招；顺带也避免了同步阻塞宿主、原生件崩溃拖死宿主。
 >
-> ⚠️ **还差最后一段**：把她的回复**自动**念出来（触发 + 播放）还没接。
-> 也就是说 `runtime` 与 `bundle` 都是真的、引擎确实能合成，但「实时语音」开关
-> 打开后她暂时不会自己开口。要接的是：回复文本 → 合成 → 推给 iframe 播放。
+> **播放路径**：合成出的 PCM 经 `/herta-minimax-events` 推给浏览器半侧，由**父窗口**
+> 的 WebAudio 播放 —— 整机 iframe 已删除，不再有第二条播放路径。
 
 > ⚠️ **本机 TLS 提示。** 这台机器对 GitHub 有中间拦截，普通 Node 的 `fetch` 会直接
 > `fetch failed`，加 `--use-system-ca` 才通。DSH 宿主是 Electron 拉起的**普通 Node
@@ -392,13 +371,14 @@ and therefore an app release: the download never trusts the host, only this file
 
 ---
 
-## 六个工具
+## 七个工具
 
 | 工具                   | 作用                                                                                                                                                                |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `herta_narrative_list` | 列出记忆货架，并如实报告哪份进了当前提示词、哪份被门拦下                                                                                                            |
 | `herta_narrative_read` | 读某一份的完整正文                                                                                                                                                  |
 | `herta_memory_save`    | 随手记一笔（过格式门 + 标题新颖性）                                                                                                                                 |
+| `herta_forget`         | 把货架上一份记忆收进归档区（移动、不是删除；归档后那份文件立刻不再进提示词）                                                                                        |
 | `herta_dream`          | 做梦：门槛更高（另加篇幅下限），并记进做梦账本                                                                                                                      |
 | `herta_speak`          | 让模型能主动发声；片段信息经 `presentationMeta` 落到工具结果的 `meta` 上，浏览器侧读取后播放。**放的是她的录音片段（`.opus`），不经过任何合成**                     |
 | `herta_say`            | 用她自己的克隆声音**说一句话**（MiniMax 云端合成，走 SSE 推给界面）。既是调试入口，也是语音链路的验收通道 —— 端到端哑掉时，先用它把「合成」与「推给界面」两段分开看 |
@@ -426,19 +406,17 @@ $env:DSH_PACKAGES = "<…>\node_modules\@deepseek-ai"
 
 node scripts\build.mjs           # client 半侧（esbuild + 模块加载器包装）
 node scripts\build-preset.mjs    # agent preset 补丁层（以随附 standard 为底，只换 persona 行）
-node scripts\build-herta-ui.mjs  # 整机页面
-node scripts\deploy.mjs          # 三样都构建 + 镜像进 lab profile
+node scripts\deploy.mjs          # 两样都构建 + 镜像进 lab profile
 
 node scripts\test-narrative.mjs        # 货架逻辑（31 项）
 node scripts\test-dream.mjs            # 做梦逻辑（28 项）
-node scripts\test-mapping.mjs          # DSH↔Herta 映射（41 项）
+node scripts\test-mapping.mjs          # DSH↔Herta 映射（21 项）
 node scripts\test-narrative-hints.mjs  # 叙述语法与提示词资产（54 项）
 node scripts\test-supervisor.mjs       # 复核：判决解析 / 路由 / 否决配额（81 项）
 node scripts\test-session-surface.mjs  # 会话表面提取：候选回话 / 摘要 / turn（32 项）
 node scripts\test-beat-policy.mjs      # 分拍判据与配额（61 项）
 node scripts\test-dream-distill.mjs    # 蒸馏提示构造与解析（55 项）
 node scripts\test-mimo-tts.mjs         # MiMo 合成请求构造（40 项）
-node scripts\test-voice-settings.mjs   # 语音偏好的清洗 / 合并（58 项）
 node scripts\test-voice-model.mjs      # 模型下载：tar 解析 / 校验 / 状态机（50 项）
 ```
 
@@ -466,7 +444,7 @@ node scripts\test-tts-runtime.mjs
 22 项：运行时能被加载（拿到 sherpa-onnx 版本号）→ 真合成出 **24 kHz 非静音**音频
 → WAV 头/采样数/字节数自洽 → 波形有起伏（不是一条平线）。
 
-`npm test` 跑 31 组（核心测试链 + MiniMax 那一组，共 **1556 项**）；另有 LLM 路径的集成测试
+`npm test` 跑 30 组（核心测试链 + MiniMax 那一组，共 **1463 项**）；另有 LLM 路径的集成测试
 （28 项，用 mock 的 `ctx.llm` 把管道整条跑通）：
 
 ```powershell
@@ -479,9 +457,9 @@ npm run test:integration
 > 在仓库里直接 import 会 `ERR_MODULE_NOT_FOUND`（在测试目录放软链接也没用 ——
 > ESM 从**被导入文件**的位置解析）。hook 把它指向本机 DSH 运行时那份。
 
-`src/shared/mapping.js` 是**纯函数**、不 import 任何东西，所以 Node 能直接测、
-esbuild 也能原样打进 client bundle —— 一份代码两个消费者，不需要额外构建步骤。
-之所以把它从客户端里抽出来：那是客户端逻辑最密的一段（11 种节点 → 3 种块），
+`src/shared/mapping.js` 是**纯函数**（只 import 仓库内的 `narrative-hints.js`），所以 Node
+能直接测、esbuild 也能原样打进 client bundle —— 一份代码两个消费者，不需要额外构建步骤。
+之所以把它从客户端里抽出来：那是客户端逻辑最密的一段（11 种节点 → 气泡，外加发声 cue），
 埋在 `.tsx` 里就只能靠浏览器验证。
 
 改动落在 `dsh.profile.bundles` 或 preset 上的，**必须重启实例**才生效。
@@ -640,38 +618,33 @@ node scripts\mock-llm-server.mjs --port 8791
   `HERTA_SRC`（Herta 源码树）仍有一个本机默认值，可用环境变量覆盖。
   ⚠️ 桌面应用的包在 `app.asar` 里，构建脚本读不到 —— 构建请指向一份
   **解开目录**的 DSH 安装（npm 安装或便携版）。
-- **她的设置页已删除，全部设置由 DSH 设置 ▸ 黑塔 统一管理**（2026-09-26）。
+- **她的设置页已删除，全部设置由 DSH 设置 ▸ Herta 统一管理**（2026-09-26）。
   `Herta-src` 里的 `SettingsModal` + 7 个分页 + 侧栏入口按钮整块移除，插件也不再往
   她自己的 `settings.json` 写任何字节（写回、种子、`↺ 跟随整机` 一并删除）。
-  仍在「暂未接线」组里的 9 项**整机当前不读**，页面逐行标注了原因 ——
-  详见 `docs/设置搬迁.md`。（`voiceEngine` 与 `realtimeVoice` 已在 2026-09-27 移出这一组，见下。）
-- **整机页的 `submitText` 未实现** —— 她那套输入框既然已隐藏，这条路径日常碰不到；
-  但若要恢复输入框，必须同时把 bridge 的 `submitText` 补上，否则还是发不出消息。
+  「暂未接线」组里的字段**当前没有消费方**（`locale` 原来的唯一读者是整机视图的
+  bridge 应答器，随视图一起删除，因此也进了这一组），页面逐行标注了原因 ——
+  详见 `docs/设置搬迁.md`。（`voiceEngine` 与 `realtimeVoice`
+  已在 2026-09-27 移出这一组，见下。）
 - **C 层客户端消费 cue 的那一半未端到端验证** —— cue 的**抽取**已有单测覆盖
   （`test-mapping.mjs`），但从一个真实的 `herta_speak` 工具结果触发播放，需要
   一次模型调用才能走通。
-- **整机的 `listSessions` 返回空** —— 她自己的会话列表 / 开场白 / 设备卡还没接；
-  整机目前只服务「当前这一个 DSH 会话」。
 - **云端语音（MiniMax）已端到端接通（2026-09-27）**：她的回复正文 → 宿主分段 →
   MiniMax 云端合成（**认领**她账号上已有的克隆，不做上传/克隆）→ SSE
-  `/herta-minimax-events` → 浏览器半侧 → `push("voice", …)` → 整机 iframe 播放
-  （iframe 缺席时父窗口用 WebAudio 自己放）。边写边念；复核否决/要求重说时把还在流的
-  那一段掐掉；每轮 800 字上限；云端不可用（没密钥/没认领到克隆/被拒/克隆被删）时
-  **显式回落本地模型**，并在设置页写明"现在是谁在说话"。**仍未接**的：
-  `voiceEngine = local / mimo` 这两条（本地模型目前只服务 `herta_speak` 与这条回落，
-  `mimo-tts.js` 仍未实例化）—— 这是决定不是遗漏。
+  `/herta-minimax-events` → 浏览器半侧用 WebAudio 在**父窗口**播放。边写边念；
+  复核否决/要求重说时把还在流的那一段掐掉；每轮 800 字上限；云端不可用
+  （没密钥/没认领到克隆/被拒/克隆被删）时**显式回落本地模型**，并在设置页写明
+  "现在是谁在说话"。
   单测：`npm run test:minimax`（324 项；`test-minimax-segment` 还与上游做了
   16164 次差分比对，0 处不一致）。
 - **C2（全量本地 TTS）已能合成**。现在：模型能按上游地址
   下载 / 校验 / 解包 / 装好，运行时（22 MB sherpa-onnx）随包分发且被**真探测**，
   合成本身用真实模型实测过（24 kHz / 非静音，`scripts/test-tts-runtime.mjs` 22 项）。
-  它现在是**回落的音源**：MiniMax 不可用时由同一条 SSE 通道推给界面。
+  它现在也是**直选就会念的一档**，并且是 `minimax` 不可用时的**回落音源**：
+  与云端语音走同一条 SSE 通道推给界面。
   注意回落需要先把模型下下来（`$DSH_HOME/tts/herta-best-e72`）；没装时回落会
   明确报「模型还没装」，不会假装出声。
   **静音与音量走通了**（2026-09-26）：它们是 DSH 设置里的 `voiceMuted` / `voiceVolume`，
-  经 bridge 下发给整机的 `voice-prefs.ts`（`hydrateVoicePrefs`），播放路径真的读它们。
-  换成独立版 / 官网 demo（没有那个 bridge 成员）时该模块退回自己的 localStorage。
-- **整机页面占 20.1 MB**（16 MB JS + 3 MB 开场段）。开场段可以改成首次运行下载。
+  直接作用在**父窗口**的 WebAudio 播放路径上（整机 bridge 与 iframe 已随之删除）。
 - **B 层的「知识」部分按计划推迟了**。现在实现的是**记忆**（货架 + 做梦账本 +
   四个工具）；Herta 上游 `@herta/knowledge` 里还有一套 sqlite 知识库
   （canon / 自省提取 / 剧情摄入，数百行）。当初的分期决定是「先把

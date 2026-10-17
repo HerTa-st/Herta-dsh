@@ -235,8 +235,7 @@ async function main() {
   const hostSrc = join(root, "src", "host");
   const hostNames = new Set(readdirSync(hostSrc));
   for (const name of readdirSync(outDir)) {
-    // 只管 host 半侧的平铺产物：client.js 是本脚本生成的，herta-ui/ 是
-    // build-herta-ui.mjs 的，都不在这里的职责内。
+    // 只管 host 半侧的平铺产物：client.js 是本脚本生成的，不在这里的职责内。
     if (
       name === "client.js" ||
       (!name.endsWith(".js") && !name.endsWith(".cjs"))

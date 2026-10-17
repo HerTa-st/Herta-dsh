@@ -4,14 +4,9 @@
  * 为什么单独一个文件：这一段由**语音端点那条 SSE** 驱动，与机器层（bridge/凭据）、界面层（面板/视图）、
  * 设置页三项各不相干 —— 改 PCM 播放不必碰设置页的 diff（架构审查 candidate #2 的 Divergent change）。
  *
- * 从 `index.tsx` 原样搬来：只改了所在文件、export，以及给界面补了一个显式入口 stopVoiceModelTimer()。
+ * 从 `index.tsx` 原样搬来：只改了所在文件与 export。
  */
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  buildRealtimeVoiceState,
-  isVoiceEngine,
-  normalizeVoiceSettings,
-} from "../host/voice-settings-shared.js";
 import { createSerialPlaybackQueue, decodePcmFrame } from "./minimax-pcm.ts";
 // 语音与静音读的是设置表单那一层（`machineField`）—— 与界面层读的是同一份值。
 import { machineField } from "./machine.ts";
@@ -24,12 +19,24 @@ import { machineField } from "./machine.ts";
 // 两个模块本来就互相 import（界面层要点朗读，语音层要推状态），这里再补一条同向的边，
 // 不引入新的循环。
 import { awaitingSpokenTexts, rememberSpokenAudio } from "./ui.ts";
+
+/**
+ * 本地语音模型端点（同源）。`GET` 读状态、`POST {"action":…}` 点火。
+ *
+ * **必须定义在这里**：`refreshVoiceModel` / `postVoiceModel` 直接引用它。2026-10-17
+ * 查出一个老 bug —— 常量当年留在 `index.tsx` 里、函数搬进本文件后没跟着搬，产物里
+ * 只有调用点没有定义；两个调用各自的 `try/catch` 把 `ReferenceError` 吞了，于是设置页
+ * 「本地语音模型」永远显示未安装、下载按钮点了没反应，且不留任何报错。
+ */
+const VOICE_MODEL_URL = "/herta-voice-model";
+
 export let voiceModelState: Record<string, unknown> | null = null;
 
-/** 订阅者（由整机视图的 `onVoiceModel` 挂上）。 */
+/** 订阅者（设置页「本地语音模型」那一行挂上）。 */
 export const voiceModelSubs = new Set<(state: unknown) => void>();
 
-export let voiceModelTimer: ReturnType<typeof setInterval> | null = null;
+/** 下载中才开的轮询定时器；其余时间必须为 null。 */
+let voiceModelTimer: ReturnType<typeof setInterval> | null = null;
 
 function notifyVoiceModel(): void {
   for (const cb of voiceModelSubs) {
@@ -85,43 +92,10 @@ export async function postVoiceModel(action: string): Promise<unknown> {
   return voiceModelState;
 }
 
-/** 把模型状态拼成 `buildRealtimeVoiceState` 要的宿主事实。 */
-export function voiceModelFacts(): Record<string, unknown> {
-  const phase = typeof voiceModelState?.phase === "string" ? voiceModelState.phase : "absent";
-  // 运行时来自宿主对 `assets/tts-runtime` 的**真探测**（子进程加载 addon），
-  // 不是常量。探测没成功（或还没问到）就是 false —— 设置面板把「下载模型」
-  // 按钮与「实时语音」开关都 gate 在它上面，写死 true 就是假绿。
-  const runtime = voiceModelState?.runtime as { available?: boolean } | undefined;
-  return {
-    runtime: runtime?.available === true,
-    // 「bundle 在不在」＝ 模型装好了没有。
-    bundle: phase === "ready",
-    failed: phase === "failed",
-    model: {
-      phase,
-      receivedBytes: voiceModelState?.receivedBytes,
-      totalBytes: voiceModelState?.totalBytes,
-      unpackedBytes: voiceModelState?.unpackedBytes,
-    },
-  };
-}
-
 // ── MiniMax 语音（PCM 播放 + 设置页那一行）────────────────────────────────────
 //
 // 宿主把合成好的 PCM 从 `/herta-minimax-events`（SSE）推过来，这里负责「放出来」。
-// 两条播放路径**二选一**：
-//
-//   · **有整机 iframe**（甲方案）→ 用既有的 `push("voice", …)` 把帧原样推给
-//     iframe，由她自己的 WebAudio 播放器放。样式、音量、她的语音偏好都在那一侧，
-//     声音听起来与官网 demo 一模一样。
-//   · **没有 iframe**（用户停在标准视图/别的页签）→ 在父窗口自己用 WebAudio 放
-//     同一段 PCM。
-//
-// ## 为什么有 iframe 就不再自己放
-//
-// 两条路同时放就是**双声**：同一句话叠着响，而且两条路各自有自己的音量与调度
-// 游标，听起来是回声。所以 sink 只能有一个，而且它是**瞬时的**：`push` 时
-// 现看 `frameRef.current?.contentWindow` 在不在，不在才走父窗口那条。
+// 只有一条播放路径：**父窗口自己的 WebAudio**（`playLocalVoice` → `localQueue`）。
 //
 // ## 为什么必须处理自动播放策略
 //
@@ -143,36 +117,6 @@ const MINIMAX_EVENTS_URL = "/herta-minimax-events";
 const MINIMAX_STATE_URL = "/herta-minimax-state";
 /** 设置页那一行的轮询间隔。 */
 const MINIMAX_POLL_MS = 5000;
-
-/**
- * 当前挂着的整机 iframe。
- *
- * 用「最后注册的那个」而不是全局唯一：整机视图切换会话时会卸载重挂，
- * 卸载时把引用清掉，于是 `push` 立刻退到父窗口那条路，不会往一个已经
- * 卸载的文档里 postMessage（那会静默丢掉，声音就永远不响了）。
- */
-let fullFrame: HTMLIFrameElement | null = null;
-
-/** 整机视图挂载时登记自己的 iframe；返回注销函数。 */
-export function registerVoiceSink(frame: HTMLIFrameElement | null): () => void {
-  fullFrame = frame;
-  return () => {
-    if (fullFrame === frame) fullFrame = null;
-  };
-}
-
-/** iframe 的 window；不在（或已卸载）就是 null —— 决定这一刻声音从哪出来。 */
-function voiceSinkWindow(): Window | null {
-  const win = fullFrame?.contentWindow;
-  return win === null || win === undefined ? null : win;
-}
-
-/** 往 iframe 推一条 voice 事件。形状**逐字**是 iframe 侧 `bridge.onVoice` 认的那个。 */
-function pushVoiceToFrame(payload: Record<string, unknown>): void {
-  const win = voiceSinkWindow();
-  if (win === null) return;
-  win.postMessage({ __herta: true, kind: "event", event: "voice", payload }, window.location.origin);
-}
 
 /** AudioContext 与主音量（懒建，见上面那段「自动播放策略」）。 */
 let voiceAudio: { ctx: AudioContext; gain: GainNode } | null = null;
@@ -311,13 +255,11 @@ function stopLocalVoice(utteranceId?: string): void {
  * **"下一次"才生效**的门 —— 已经排进 WebAudio 时间轴的那几段照播不误，于是听感就是
  * 「等她念完这句才停」。
  *
- * ## 这里做三件事，缺一不可
+ * ## 这里做两件事，缺一不可
  *
  *   1. **增益归零**：`gain` 是所有源共用的那一个节点，把它压到 0 是唯一"马上没声"
  *      的办法（对已在播的源一样有效）；
- *   2. **停掉已排的源**并清游标：否则解静音之后，那些本该被丢掉的段还会接着响；
- *   3. **给 iframe 推一条空 id 的 `ttsStop`**：整机那条路上的声音在 iframe 里，
- *      父窗口这边停不到它 —— 空 id 是既有协议里"停全部"的写法（见 `onMiniMaxStop`）。
+ *   2. **停掉已排的源**并清游标：否则解静音之后，那些本该被丢掉的段还会接着响。
  *
  * 不 `suspend()` AudioContext：那会把上下文挂起，解静音后还要等一次 resume，
  * 而 resume 需要用户手势 —— 静音一次反而把声音永久弄哑，是更糟的失败。
@@ -345,8 +287,6 @@ export function applyMuteNow(): void {
 
   stopLocalVoice();
   localQueue.stopAll();
-  // 整机 iframe 那条路：声音在它的文档里，只能让它停。
-  if (voiceSinkWindow() !== null) pushVoiceToFrame({ kind: "ttsStop", utteranceId: "" });
 }
 
 /** 一条 PCM 交给 WebAudio：调度到 `max(now, 全局游标)` —— 所有音频首尾相接，不叠声。 */
@@ -365,7 +305,7 @@ export function playLocalVoice(
     const buffer = ctx.createBuffer(1, samples.length, sampleRate);
     const channel = buffer.getChannelData(0);
     for (let i = 0; i < samples.length; i += 1) {
-      // Int16 → [-1, 1)。32768 而不是 32767：与宿主/整机那边同一套换算，
+      // Int16 → [-1, 1)。32768 而不是 32767：与宿主那边同一套换算，
       // 负满量程才是精确的。
       channel[i] = (samples[i] ?? 0) / 32768;
     }
@@ -410,9 +350,9 @@ export function playLocalVoice(
 }
 
 /**
- * 父窗口这条路的播放队列（纯逻辑在 `minimax-pcm.ts`）。
+ * 播放队列（纯逻辑在 `minimax-pcm.ts`）。
  *
- * 只在**没有 iframe** 的时候真的被推东西；有 iframe 时它一个单元都不会收到。
+ * `tts` 帧按 utteranceId/seq 排队，同一句的多段首尾相接，不叠声。
  */
 export const localQueue = createSerialPlaybackQueue({
   onPlay: (item) => {
@@ -433,7 +373,7 @@ export const localQueue = createSerialPlaybackQueue({
 });
 
 /**
- * 一个 `tts` 帧：解码 → 按「有没有整机 iframe」二选一交付。
+ * 一个 `tts` 帧：解码后交给播放队列。
  *
  * 解码失败（帧坏了）只记账、不抛：一条坏帧不该让整条 SSE 连接崩掉，
  * 后面的句子还得继续念。
@@ -464,9 +404,7 @@ function onMiniMaxPcm(frame: {
   }
   markMinimax("minimaxLastFrame", `${utteranceId}#${seq} ${samples.length} samples`);
 
-  // [点哪段读哪段] 先按**它自己的文字**归档，再决定往哪放。
-  // 放在这里而不是下面：整机视图那条路绕过 localQueue 直接推 iframe，
-  // 但它同样该进档案 —— 档案是两条路共用的。
+  // [点哪段读哪段] 先按**它自己的文字**归档，再交给播放队列。
   rememberSpokenAudio(frame.text, samples, sampleRate, durationMs);
   // [点哪段读哪段] 这一帧来自**我们**发出去的某次 say 请求：按当时报上去的那段
   // 文字归档 —— 那正是下一次点击会递上来的钥匙。可能有好几笔请求同时在飞，
@@ -479,23 +417,11 @@ function onMiniMaxPcm(frame: {
     }
   }
 
-  // 甲方案（有 iframe）：只推给它。**不**自己再放一遍 —— 那就是双声。
-  // 形状逐字是 `{ kind:"tts", utteranceId, seq, samples, sampleRate, durationMs }`，
-  // `kind:"tts"` 也是唯一能在 iframe 里放出声音的 kind（`cue` 走的是另一套协议）。
-  if (voiceSinkWindow() !== null) {
-    pushVoiceToFrame({ kind: "tts", utteranceId, seq, samples, sampleRate, durationMs });
-    return;
-  }
-  // 标准视图（没有 iframe）：父窗口自己放。
   localQueue.push(utteranceId, seq, { samples, sampleRate, durationMs });
 }
 
-/** 一条 `ttsStop` 帧：有 iframe 就推给它，没有就停父窗口这边。 */
+/** 一条 `ttsStop` 帧：停掉对应的那一句（空 id 在派发处被忽略，停全部走静音那条路）。 */
 function onMiniMaxStop(utteranceId: string): void {
-  if (voiceSinkWindow() !== null) {
-    pushVoiceToFrame({ kind: "ttsStop", utteranceId });
-    return;
-  }
   localQueue.stop(utteranceId);
 }
 
@@ -611,8 +537,8 @@ export function miniMaxRetryText(retryAt: unknown): string | null {
 /**
  * SSE 一帧的派发。
  *
- * 与 iframe 那侧的 `bridge.onVoice` 认的是同一组 kind：`tts` / `ttsStop`，
- * 外加宿主的状态帧 `state`（它没有独立的推送通道，就搭在这条流上）。
+ * 两种帧：`tts` / `ttsStop`，外加宿主的状态帧 `state`（它没有独立的推送通道，
+ * 就搭在这条流上）。
  */
 function dispatchMiniMaxFrame(frame: Record<string, unknown>): void {
   if (frame.kind === "tts") {
@@ -658,8 +584,8 @@ let miniMaxStreamRefs = 0;
 /**
  * 订阅宿主的 PCM 流。
  *
- * **挂在插件级（`apply`）而不是整机视图里**：声音该在用户停在任何页签时都响 ——
- * 只在整机页签订阅的话，切到别的页签就全哑了，而那正是「功能只在开着某个页签时
+ * **挂在插件级（`apply`）而不是对话视图里**：声音该在用户停在任何页签时都响 ——
+ * 只在某个页签订阅的话，切到别的页签就全哑了，而那正是「功能只在开着某个页签时
  * 有效」的典型毛病。
  *
  * `EventSource` 不存在（无头 / 旧浏览器）时只记一条，不抛 —— 设置页那一行靠
@@ -752,16 +678,4 @@ interface VoiceCue {
   readonly url: string;
   readonly clip: string;
   readonly category: string;
-}
-/**
- * 停掉共享的语音模型轮询。界面的 `useEffect` 清理调它 —— 否则每挂一次视图就多留一个定时器。
- *
- * 为什么要有这个函数：原先清理里直接 `clearInterval(voiceModelTimer); voiceModelTimer = null;`，
- * 而那个状态现在归本文件 —— 外面再直接赋值就是「给 import 赋值」。状态归这一层，外面只经这个口子。
- */
-export function stopVoiceModelTimer(): void {
-  if (voiceModelTimer !== null) {
-    clearInterval(voiceModelTimer);
-    voiceModelTimer = null;
-  }
 }

@@ -65,3 +65,10 @@ settings → machine(15) voice(12) ui(3)
   运行时（`E:\deepseek工作区\HerTa\dsh-017\node_modules`）**这台机器上没有** ——
   2026-10-04 实测：`E:` 与 `C:\herta-ai\tools\_E\` 下都不存在该目录（只有 `Herta-src`）。
   在装得上的机器上设 `$env:DSH_MODULES` 即可跑。
+
+> **2026-10-17 后续变更**：整机 iframe 视图（甲方案）已删除，上面区域表里的
+> `HertaFullView`（`ui.ts` 的出口）与 `registerVoiceSink`（iframe 播放路径）随之下线 ——
+> `ui.ts` 只剩 `HertaView`，`voice.ts` 的播放只在父窗口用 WebAudio。同一变更还删掉了
+> region 共享的 `../host/voice-settings-shared.js`（语音偏好归一化，随旧语音偏好链路
+> 删除）以及它的 `scripts/test-voice-settings.mjs`；现在 region 只 import
+> `../shared/mapping.js` 与 `../host/settings-schema.js`。区域划分本身不变。

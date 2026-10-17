@@ -20,8 +20,8 @@
  *
  *   1. 版本号：高于 npm 上的 `latest`，且该版本号没在 registry 上出现过
  *   2. 工作区：已跟踪文件无未提交改动（未跟踪文件只警告）
- *   3. 测试：核心 23 组 + MiniMax 6 组全绿
- *   4. 构建：`build` + `build:ui` + `build:preset` 跑完 `git diff` 必须为空
+ *   3. 测试：`package.json` 的 `test` 链全绿
+ *   4. 构建：`build` + `build:preset` 跑完 `git diff` 必须为空
  *   5. 产物：`test-artifact-sync`（`src/host` ↔ `lib` 逐字节 + 发布目录无 `.bak`）
  *   6. 打包：`npm pack` 的实际内容、文件数、大小与 sha1（写进 Release 说明）
  *   7. 文案：README 版本历史条目 + 两份发布文档（Release 说明 / B 站公告）都在
@@ -289,7 +289,7 @@ function checkTests() {
 // ── 4. 构建零差异 ───────────────────────────────────────────────────────────
 function checkBuild() {
   console.log("\n── 4. 构建（必须零差异）───────────────────────────────");
-  for (const script of ["build", "build:ui", "build:preset"]) {
+  for (const script of ["build", "build:preset"]) {
     const r = npm("run", script);
     if (!r.ok) {
       check(FAIL, `npm run ${script} 失败`, r.out.split("\n").filter(Boolean).slice(-1)[0] ?? "");

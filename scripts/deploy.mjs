@@ -156,7 +156,7 @@ function copyTree(from, to) {
   }
 }
 
-// 1) 构建（插件 + preset + 整机页面）。`--no-build` 时跳过：产物随提交一起推，
+// 1) 构建（插件 + preset）。`--no-build` 时跳过：产物随提交一起推，
 //    一致性由 `scripts/test-artifact-sync.mjs` 守（本机没有 esbuild，见文件头）。
 if (NO_BUILD) {
   console.log("（--no-build：跳过构建，直接镜像仓库里的产物）");
@@ -166,10 +166,6 @@ if (NO_BUILD) {
     cwd: root,
   });
   execFileSync(process.execPath, [join(here, "build-preset.mjs")], {
-    stdio: "inherit",
-    cwd: root,
-  });
-  execFileSync(process.execPath, [join(here, "build-herta-ui.mjs")], {
     stdio: "inherit",
     cwd: root,
   });

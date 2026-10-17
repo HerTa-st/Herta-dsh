@@ -53,7 +53,7 @@ export interface PlaybackQueueOptions<T = unknown> {
    *   · `stop(utteranceId)`
    *
    * 队列只管自己的状态，音频是调用方的事（它才知道 `AudioBufferSourceNode`
-   * 或 iframe 在哪里）。只在这条 utterance **确实还有活的东西**（正在播或在排队）
+   * 在哪里）。只在这条 utterance **确实还有活的东西**（正在播或在排队）
    * 时触发，所以「空停」不会白叫一次。
    */
   onStop?: (utteranceId: string) => void;

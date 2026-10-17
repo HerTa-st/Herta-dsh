@@ -13,7 +13,7 @@
  *     name: '@deepseek-ai/dsh-agent-preset'
  *     config:
  *       id: herta
- *       name: 黑塔
+ *       name: Herta
  *       order: 5
  *       plugins: [ ...子插件清单... ]
  *
@@ -238,9 +238,9 @@ for (const p of [BASE, BIO, ADAPT_PREFIX, ADAPT_SUFFIX]) {
 const PRESET = {
   entryId: "preset-herta",
   id: "herta",
-  name: "黑塔",
+  name: "Herta",
   description:
-    "黑塔本人 —— 天才俱乐部#83。说话短、准、不爱解释，对蠢问题缺乏耐心。带她自己的人格正本与记忆纪律。",
+    "Herta 本人 —— 天才俱乐部#83。说话短、准、不爱解释，对蠢问题缺乏耐心。带她自己的人格正本与记忆纪律。",
   order: 5,
 };
 

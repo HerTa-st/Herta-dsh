@@ -166,7 +166,7 @@ console.log("voice-mute-instant（静音是不是立刻生效）");
   check("退订之后不再收到（面板卸载不留监听）", seen.length === 2);
 }
 
-// ── 5. applyMuteNow 本身不抛（没有 AudioContext / 没有 iframe 的环境）──────
+// ── 5. applyMuteNow 本身不抛（没有 AudioContext 的环境）────────────────────
 {
   const form = makeForm({ voiceMuted: true, voiceVolume: 30 });
   bindMachineForm(form);
