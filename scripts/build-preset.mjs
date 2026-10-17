@@ -38,7 +38,12 @@
  *
  * 人设映射（本层唯一带判断的地方）：
  *   prefix = HertaBio.txt（逐字，身份正本）+ adaptation-prefix.md（她在这台终端上的处境）
- *   suffix = adaptation-suffix.md（工具/记忆/边界纪律）+ cwd 行
+ *   suffix = adaptation-suffix.md（工具/记忆/边界纪律）
+ *
+ * **0.2.1 起不再往 suffix 追加工作目录行**：`dsh-agent-loop` 的内置提示词变量只剩
+ * `provider` / `model`（0.2.1-rc.2 起 `cwd` 被移除），而未注册的 `{{变量}}` 会让
+ * 系统提示词组装在发出任何模型请求之前直接抛错 —— 所以这里宁可少说一句，
+ * 也不把 `{{cwd}}` 写进 persona。`assertPromptVariables()` 兜底拦这类引用。
  *
  * **刻意不用 `complete: true`**：那会独占系统提示词，把 B 层要挂的
  * 「活记忆」prompt 段一并憋死。
@@ -52,7 +57,13 @@
  * 自带底本：官方那份躺在 Electron 的 `app.asar` 里，裸 Node 读不到，而本机
  * 解包出来的安装（`dsh-017`）可能比桌面应用的版本旧。
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -60,7 +71,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 
 /** Herta 源码树（身份正本在这里）。 */
-const HERTA_SRC = process.env.HERTA_SRC ?? "E:\\deepseek工作区\\HerTa\\Herta-src";
+const HERTA_SRC =
+  process.env.HERTA_SRC ?? "E:\\deepseek工作区\\HerTa\\Herta-src";
 
 /** 仓库自带的官方底本目录：`scripts/baselines/standard.dsh-<version>.patch.yml`。 */
 const BASELINE_DIR = join(here, "baselines");
@@ -78,7 +90,10 @@ const BASELINE_DIR = join(here, "baselines");
 function compareVersions(a, b) {
   const parse = (value) => {
     const [core = "", pre = ""] = String(value ?? "").split("-", 2);
-    return { nums: core.split(".").map((n) => Number.parseInt(n, 10) || 0), pre };
+    return {
+      nums: core.split(".").map((n) => Number.parseInt(n, 10) || 0),
+      pre,
+    };
   };
   const left = parse(a);
   const right = parse(b);
@@ -96,7 +111,9 @@ function compareVersions(a, b) {
 /** 读一份 DSH 安装里 `dsh-web-app` 的版本；读不到返回 undefined。 */
 function webAppVersion(dir) {
   try {
-    const manifest = JSON.parse(readFileSync(join(dir, "dsh-web-app", "package.json"), "utf8"));
+    const manifest = JSON.parse(
+      readFileSync(join(dir, "dsh-web-app", "package.json"), "utf8")
+    );
     return typeof manifest.version === "string" ? manifest.version : undefined;
   } catch {
     return undefined;
@@ -153,7 +170,9 @@ function resolveBaseline() {
       origin: "DSH_PACKAGES（显式覆盖）",
     };
     if (!existsSync(explicit.file)) {
-      throw new Error(`DSH_PACKAGES 指向的目录里没有 dsh-web-app/presets/standard.patch.yml：\n  ${explicit.file}`);
+      throw new Error(
+        `DSH_PACKAGES 指向的目录里没有 dsh-web-app/presets/standard.patch.yml：\n  ${explicit.file}`
+      );
     }
     return { ...explicit, version: webAppVersion(override) };
   }
@@ -171,11 +190,19 @@ function resolveBaseline() {
   //    `dsh` 打进 `resources\app.asar`，profile 里的 `@deepseek-ai` 也可能只是
   //    指向上游的 junction —— 上游换位置或卸载之后就断了。换机器请设
   //    `$env:DSH_PACKAGES`；版本比较会保证它们不会把自带的更新底本压掉。
-  push("E:\\deepseek工作区\\HerTa\\dsh-017\\node_modules\\@deepseek-ai", "本机已知解包位置");
-  push("E:\\DeepSeek H\\data\\runtime\\dsh\\node_modules\\@deepseek-ai", "本机已知解包位置");
+  push(
+    "E:\\deepseek工作区\\HerTa\\dsh-017\\node_modules\\@deepseek-ai",
+    "本机已知解包位置"
+  );
+  push(
+    "E:\\DeepSeek H\\data\\runtime\\dsh\\node_modules\\@deepseek-ai",
+    "本机已知解包位置"
+  );
 
   const usable = [
-    ...candidates.filter((c) => existsSync(c.file)).map((c) => ({ ...c, version: webAppVersion(c.dir) })),
+    ...candidates
+      .filter((c) => existsSync(c.file))
+      .map((c) => ({ ...c, version: webAppVersion(c.dir) })),
     ...vendoredBaselines(),
   ].sort((a, b) => compareVersions(b.version, a.version));
 
@@ -189,7 +216,7 @@ function resolveBaseline() {
         '  $env:DSH_PACKAGES = "C:\\path\\to\\dsh\\node_modules\\@deepseek-ai"',
         "试过这些位置（外加自带底本）：",
         ...candidates.map((c) => `  ${c.file}`),
-      ].join("\n"),
+      ].join("\n")
     );
   }
   return usable[0];
@@ -240,13 +267,17 @@ let base = readFileSync(BASE, "utf8").replace(/\r\n/g, "\n");
 // ── 1) 换掉 preset 的身份行 ────────────────────────────────────────────────
 const STANDARD_ENTRY = "    - id: preset-standard";
 if (!base.includes(STANDARD_ENTRY)) {
-  throw new Error(`底本里没找到 \`${STANDARD_ENTRY.trim()}\` —— 上游改了写法，需要更新本脚本`);
+  throw new Error(
+    `底本里没找到 \`${STANDARD_ENTRY.trim()}\` —— 上游改了写法，需要更新本脚本`
+  );
 }
 base = base.replace(STANDARD_ENTRY, `    - id: ${PRESET.entryId}`);
 
 const STANDARD_ID = "        id: standard";
 if (!base.includes(STANDARD_ID)) {
-  throw new Error("底本里没找到 `        id: standard` —— 上游改了写法，需要更新本脚本");
+  throw new Error(
+    "底本里没找到 `        id: standard` —— 上游改了写法，需要更新本脚本"
+  );
 }
 base = base.replace(
   STANDARD_ID,
@@ -254,12 +285,14 @@ base = base.replace(
     `        id: ${PRESET.id}`,
     `        name: ${PRESET.name}`,
     `        description: ${PRESET.description}`,
-  ].join("\n"),
+  ].join("\n")
 );
 
 const ORDER_RE = /^ {8}order: \d+$/m;
 if (!ORDER_RE.test(base)) {
-  throw new Error("底本里没找到 preset 的 `        order: <n>` —— 上游改了写法，需要更新本脚本");
+  throw new Error(
+    "底本里没找到 preset 的 `        order: <n>` —— 上游改了写法，需要更新本脚本"
+  );
 }
 base = base.replace(ORDER_RE, `        order: ${PRESET.order}`);
 
@@ -268,7 +301,7 @@ const lines = base.split("\n");
 const start = lines.findIndex((l) => l === `${ROW_INDENT}- id: persona`);
 if (start < 0) {
   throw new Error(
-    "在底本里没找到 `          - id: persona` 行 —— 上游改了写法，需要更新本脚本",
+    "在底本里没找到 `          - id: persona` 行 —— 上游改了写法，需要更新本脚本"
   );
 }
 
@@ -307,11 +340,13 @@ const personaBlock = [
   blockScalar(adaptPrefix, CFG_INDENT.length + 2),
   `${CFG_INDENT}suffix: |-`,
   blockScalar(adaptSuffix, CFG_INDENT.length + 2),
-  "",
-  `${CFG_INDENT}  Your working directory is {{cwd}}.`,
 ].join("\n");
 
-const withPersona = [...lines.slice(0, start), personaBlock, ...lines.slice(end)];
+const withPersona = [
+  ...lines.slice(0, start),
+  personaBlock,
+  ...lines.slice(end),
+];
 
 // ── 3) 把 dsh-herta 的 agent 面行插进 plugins 末尾 ─────────────────────────
 // 插件行缩进必须 ≥ 10，且要留在 plugins 序列里（不能跑到文档之外）。
@@ -349,6 +384,31 @@ const withHeader = `# 本文件由 scripts/build-preset.mjs 生成，请勿手�
 ${out.replace(/\n+$/, "")}
 `;
 
+/**
+ * 兜底：preset 只允许 DSH 实际注册的提示词变量。
+ *
+ * 2026-10-17 真机踩到：`{{cwd}}` 在 0.2.1-rc.2 里已经不算内置变量（`dsh-agent-loop`
+ * 只注册 `provider` / `model`），而系统提示词的插值是**严格**的 —— 未知引用会让
+ * 组装在发出任何模型请求之前抛错，表现为「换个 preset 就整个会话起不来」。
+ * 与其等运行时炸，不如让构建当场失败：这里的报错才是能定位的那一处。
+ */
+const PROMPT_VARIABLES = new Set(["provider", "model"]);
+function assertPromptVariables(text) {
+  const unknown = [];
+  for (const match of text.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)) {
+    const name = match[1];
+    if (!PROMPT_VARIABLES.has(name) && !unknown.includes(name))
+      unknown.push(name);
+  }
+  if (unknown.length > 0) {
+    throw new Error(
+      `preset 里出现了 DSH 未注册的提示词变量：${unknown.map((n) => `{{${n}}}`).join("、")}。\n` +
+        "0.2.1 起 dsh-agent-loop 只注册 provider / model；未注册引用会让系统提示词组装在发请求前抛错。"
+    );
+  }
+}
+assertPromptVariables(withHeader);
+
 mkdirSync(join(root, "preset"), { recursive: true });
 writeFileSync(OUT, withHeader, "utf8");
 
@@ -359,7 +419,9 @@ console.log(`底本版本    dsh-web-app ${BASELINE.version ?? "版本未知"}`)
 console.log(`身份正本    HertaBio.txt（${kb(bio)} KB，逐字）`);
 console.log(`处境改写    adaptation-prefix.md（${kb(adaptPrefix)} KB）`);
 console.log(`纪律改写    adaptation-suffix.md（${kb(adaptSuffix)} KB）`);
-console.log(`persona 行  原 ${end - start} 行 → 新 ${personaBlock.split("\n").length} 行`);
 console.log(
-  `已写出      ${OUT}（${kb(withHeader)} KB，共 ${withHeader.split("\n").length} 行）`,
+  `persona 行  原 ${end - start} 行 → 新 ${personaBlock.split("\n").length} 行`
+);
+console.log(
+  `已写出      ${OUT}（${kb(withHeader)} KB，共 ${withHeader.split("\n").length} 行）`
 );
