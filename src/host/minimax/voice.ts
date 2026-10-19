@@ -51,6 +51,16 @@ import { errorMessage } from "./types.js";
  */
 export const LEGACY_REFERENCE_TAG = "b1a43133";
 
+/**
+ * 作者账号上那个克隆的**已知 id**。
+ *
+ * 中转站没有「列账号克隆」的能力（`supportsVoiceList = false`），所以认领时拿不到
+ * 任何候选 —— 2026-10-17 起不再就此失败，而是先按这个 id 试一次：多数中转站是
+ * **透明转发**，那个 id 在服务端是有效的。试不成也只是合成时明确报「音色不存在」，
+ * 比一句「认领失败」有用。官方形状不走这条路（那边能列，列不到就说明真被删了）。
+ */
+export const KNOWN_DEFAULT_VOICE_ID = "herta-b1a43133-uo58hrlu1x";
+
 /** 认领阶段。与上游同名同义（`preparing` 是瞬态，读状态的人可能看不到它）。 */
 export type MiniMaxVoicePhase = "absent" | "preparing" | "ready" | "failed";
 
@@ -422,7 +432,20 @@ export function createMiniMaxVoiceService(opts: MiniMaxVoiceOptions): MiniMaxVoi
         .sort((a, b) => b.createdMs - a.createdMs);
       const newest = mine[0];
       if (newest === undefined) {
-        // 账号上没有她的克隆 —— 而本插件不带克隆能力，所以这是终局失败（等冷却后再看）。
+        // 中转站（不能列克隆）：不直接失败，先按作者那个克隆的已知 id 试一次。
+        // 透明转发的中转站上它是有效的 —— 于是用户零输入就能用到作者原音。
+        if (!hostShape.supportsVoiceList) {
+          persist({
+            voiceId: KNOWN_DEFAULT_VOICE_ID,
+            host,
+            adoptedTag: LEGACY_REFERENCE_TAG,
+            adoptAttemptAt: new Date(now()).toISOString(),
+            adoptFailure: undefined,
+          });
+          log("中转站不能列克隆：先按作者那个克隆的 id（" + KNOWN_DEFAULT_VOICE_ID + "）试一次");
+          return emit();
+        }
+        // 官方形状：账号上没有她的克隆 —— 本插件不带克隆能力，所以这是终局失败（等冷却后再看）。
         return fail("no_clone_key");
       }
       // `undefined` 在 JSON.stringify 里会被丢掉 —— 所以"清掉上次的失败"只要把
