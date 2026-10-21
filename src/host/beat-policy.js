@@ -53,6 +53,33 @@ export function looksLikeVerification(name) {
 }
 
 /**
+ * 要不要**压住**这一次分拍 —— A / B / C 三道闸，都在这一处。
+ *
+ * 起因（2026-10-22）：新对话的第一句永远是「某一步失败了」的点评，因为她的开局
+ * 动作（广域搜索 / 抓网页）在第一步就失败，而 `decideBeat` 对任何 isError 都触发。
+ * 结果用户看到的第一句话不是在回答他，是在对某个报错冷嘲。
+ *
+ * 三道闸各治一层：
+ *
+ *   · **B `turn === 1`** —— 第一轮完全不分拍。开门第一句必须是回答，不是点评。
+ *   · **C `step <= 1`** —— 第一步的失败不点评。那是"还没开始干"，谈不上"干到中途"。
+ *   · **A `!spokeInTurn`** —— 这一轮她**一句话都还没说过**时不分拍。
+ *     这条是最本质的：点评的前提是"她已经开了口"，否则点评本身就成了第一句
+ *     （B 只堵第一轮，A 堵所有轮）。
+ *
+ * 三条都放行才注入。想放宽时只改这里 —— 例如允许第二轮的第一步点评，就把 C 去掉。
+ *
+ * @param {{turn: number|null, step: number|null, spokeInTurn: boolean}} ctx
+ * @returns {"first-turn"|"first-step"|"not-spoken"|null} 跳过原因；null = 可以分拍。
+ */
+export function beatSkipReason(ctx) {
+  if (ctx?.turn === 1) return "first-turn";
+  if (typeof ctx?.step === "number" && Number.isFinite(ctx.step) && ctx.step <= 1) return "first-step";
+  if (ctx?.spokeInTurn !== true) return "not-spoken";
+  return null;
+}
+
+/**
  * 从一次工具结果判断要不要让她补一句点评，以及用哪条提示。
  *
  * **纯函数**：只看 `(exec, result)` 这两个入参，配额与状态由调用方管

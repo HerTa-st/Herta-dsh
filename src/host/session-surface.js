@@ -269,6 +269,72 @@ export function pickCurrentTurnFromEvents(session) {
 }
 
 /**
+ * 当前 step 号 —— 与 {@link pickCurrentTurnFromEvents} 同一个取法（读全量事件，
+ * 从后往前找最近的 `step/start`）。
+ *
+ * 用途：分拍的 C 闸（第一步的失败不点评）。
+ *
+ * @param {object} session - `agent.session`。
+ * @returns {number|null} step 号，或 null。
+ */
+export function pickCurrentStepFromEvents(session) {
+  if (session === null || session === undefined) return null;
+  let events;
+  try {
+    events = session.snapshotEvents?.();
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(events)) return null;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event?.type !== "step/start") continue;
+    const step = dataOf(event).step;
+    if (Number.isFinite(step)) return Number(step);
+  }
+  return null;
+}
+
+/**
+ * 这一轮里，她**说过话**没有（有文本块的 assistant 消息）。
+ *
+ * 用途：分拍的 A 闸 —— 点评的前提是"她已经开了口"。只看 `turn` 不小于给定轮次的
+ * 那些 `assistant/message`，且必须有非空 `text` 块（只有 tool-call 不算说话）。
+ *
+ * 边界：事件读不到 / turn 为 null 时返回 false（宁可少点评，也不要替她把第一句变成吐槽）。
+ *
+ * @param {object} session - `agent.session`。
+ * @param {number|null} turn - 当前轮次（来自 {@link pickCurrentTurnFromEvents}）。
+ * @returns {boolean}
+ */
+export function hasAssistantTextInTurn(session, turn) {
+  if (session === null || session === undefined) return false;
+  if (typeof turn !== "number" || !Number.isFinite(turn)) return false;
+  let events;
+  try {
+    events = session.snapshotEvents?.();
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(events)) return false;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event?.type === "turn/start") {
+      const t = dataOf(event).turn;
+      // 走到本轮的 turn/start 就停：再往前是上一轮。
+      if (Number.isFinite(t) && Number(t) < turn) return false;
+      continue;
+    }
+    if (event?.type !== "assistant/message") continue;
+    const data = dataOf(event);
+    if (Number.isFinite(data.turn) && Number(data.turn) < turn) continue;
+    const text = textOfBlocks(data.message?.content);
+    if (text !== "") return true;
+  }
+  return false;
+}
+
+/**
  * 这个 agent 是不是「派出去干活的子代理」。
  *
  * ## 为什么要判它
