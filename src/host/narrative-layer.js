@@ -57,11 +57,14 @@ import { VetoBudget, buildVetoSteering, resolveRoute } from "./supervisor.js";
 import {
   isSubagentAgent,
   pickCandidate,
+  hasAssistantTextInTurn,
+  pickCurrentStepFromEvents,
   pickCurrentTurnFromEvents,
   pickRecent,
 } from "./session-surface.js";
 import {
   BeatBudget,
+  beatSkipReason,
   buildBeatSteering,
   decideBeat,
   failureSummary,
@@ -510,6 +513,18 @@ export async function installNarrativeLayer(ctx) {
           console.log(`[dsh-herta] 分拍候选 turn=${turn}`);
           if (turn === null) {
             marks.beatLast = { skipped: "no-turn" };
+            return;
+          }
+          // A + B + C：她还没开口 / 第一轮 / 第一步 —— 都不点评。
+          // 起因：新对话的第一句永远是「某一步失败了」的吐槽（详见 beatSkipReason）。
+          const step = pickCurrentStepFromEvents(exec?.agent?.session);
+          const spokeInTurn = hasAssistantTextInTurn(exec?.agent?.session, turn);
+          const skip = beatSkipReason({ turn, step, spokeInTurn });
+          if (skip !== null) {
+            marks.beatLast = { turn, step, kind: decision.kind, skipped: skip };
+            console.log(
+              `[dsh-herta] 分拍压住（${skip}）：turn=${turn} step=${step} spokeInTurn=${spokeInTurn}`,
+            );
             return;
           }
           if (beatBudget.canBeat(turn) === false) {
