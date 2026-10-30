@@ -55,7 +55,7 @@
 
 ## ⚙️ 兼容性（先看这一节）
 
-**面向 DSH `0.1.7-rc.2` 起（`0.2.1-rc.2` 实测）。** 下面三处是 0.1.5 → 0.1.7 之间
+**面向 DSH `0.1.7-rc.2` 起（`0.2.1-rc.5` 实测）。** 下面三处是 0.1.5 → 0.1.7 之间
 的**破坏性 API 变更**（都是实测出来的，不是猜的）：
 
 | 变了什么                           | 0.1.5 时的写法                                                                       | 0.1.7 的现状                                                                                                                                                                                                                                                                                | 本仓库怎么办                                                                                                                                                                                                                                   |
@@ -74,6 +74,22 @@
 `ctx.on('agent/turn-stopping' | 'agent/error' | 'tools/result')`、
 `@deepseek-ai/dsh-llm` 的 `BlockAssembler` / `createUserMessage`、
 `webServer.register({ kind: 'prefix' })`。
+
+### 0.2.1-rc.5 的核对（2026-10-30）
+
+升级到 rc.5 之后**没有发现断裂**，三条判据都在仓库里、可随时复核（`npm test` 里的
+`test-dsh-compat`，只读、没装 DSH 时自动跳过）：
+
+| 判据 | 结果 |
+| ---- | ---- |
+| 官方 `presets/standard.patch.yml` 与我们自带的底本 | **逐字节一致**（rc.2 与 rc.5 的这份文件完全相同，sha256 `0d398d2a…`）；`scripts/baselines/` 里按约定补了 rc.5 一份 |
+| `preset/herta.patch.yml` 里引用的 29 个包/子路径 | **全部可解析**（含三个子路径导出：`dsh-tool-subagent-control/list-agents`、`dsh-plugin-manager/tools`、`dsh-plugin-market/tools`） |
+| 插件 `dsh.client.inject` 里的 `@deepseek-ai/dsh-client-ui-slots` | 该包在 rc.5 **已不存在**；但 DSH 对「注入不存在的包」是**容忍**的 —— rc.5 自己的 `dsh-client-ui-jobs` / `-schedule` / `-subagent` 都在 inject 里引用了同样不存在的 `dsh-client-ui-primitives`（3 处官方先例）。所以这一条**不是问题**，只是在核对里留一条说明 |
+
+宿主侧用到的 API 在 rc.5 上逐个核过、签名未变：`session.snapshotEvents()`（新增了可选起止
+seq 参数，无参调用照旧）、`session.deriveEventMessage`、事件 `agent/turn-stopping` /
+`agent/error` / `tools/result`、`@deepseek-ai/dsh-llm` 的 `createUserMessage`、
+`agent.steer(input)`、客户端 `ctx.slots` 服务。
 
 0.2.1 另有一处**提示词变量**的收紧：`dsh-agent-loop` 只注册 `provider` / `model`，
 `{{cwd}}` 已被移除（官方 README 明确要求自定义 persona 不得依赖它）。v0.1.11 起
