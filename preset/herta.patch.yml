@@ -1,5 +1,5 @@
 # 本文件由 scripts/build-preset.mjs 生成，请勿手改。
-# 底本：E:\deepseek工作区\HerTa\dsh-herta\scripts\baselines\standard.dsh-0.2.1-rc.2.patch.yml
+# 底本：C:\herta-ai\dsh-herta\scripts\baselines\standard.dsh-0.2.2-rc.1.patch.yml
 # 结构：一条 `@deepseek-ai/dsh-agent-preset` 行，作为本包的第二条 bundle patch
 # （见 package.json 的 dsh.bundle.patch 数组）随插件一起装。
 # Agent preset standard: one `@deepseek-ai/dsh-agent-preset` declaration inserted
@@ -327,6 +327,9 @@
             disabled: !!js process.platform !== 'win32'
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              # Set false to drop the apply_patch tool beside edit.
+              applyPatch: false
           - id: tool-fs-search
             name: '@deepseek-ai/dsh-tool-fs-search'
             config:
@@ -389,14 +392,13 @@
             config:
               - id: tool-subagent-control
                 name: '@deepseek-ai/dsh-tool-subagent-control'
-              - id: tool-subagent-list-agents
-                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
               - id: tool-subagent
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: spawn
                   toolName: subagent
-                  modelSelectionSettings: true
+                  modelSelection: true
+                  modelDiscovery: true
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
@@ -423,7 +425,7 @@
             name: '@deepseek-ai/dsh-tool-present'
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
-            disabled: true
+            disabled: !!js "!ctx.get('profileContext')"
           - id: tool-plugin-market
             name: '@deepseek-ai/dsh-plugin-market/tools'
             disabled: true

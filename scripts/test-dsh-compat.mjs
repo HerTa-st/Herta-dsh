@@ -3,14 +3,16 @@
  *
  * ## 它核对什么
  *
- * 插件与 DSH 之间有三处**会随版本漂移**的契约，靠人记不住：
+ * 插件与 DSH 之间有几处**会随版本漂移**的契约，靠人记不住：
  *
  * 1. **官方 preset 底本**：`preset/herta.patch.yml` 以官方 `standard.patch.yml` 为底、
  *    只替换 persona。底本变了而我们没跟，症状是"她少了某个能力"，没人会往构建脚本上想。
  *    → 这里把**已安装 DSH 里的那份**与 `scripts/baselines/` 里的底本比指纹。
  * 2. **preset 里引用的每一个包/子路径**：rc 之间会改包名、删子路径导出。
  *    → 逐个解析（包根存在 + 子路径在 `exports` 里）。
- * 3. **`dsh.client.inject` 里引用的包**：rc 里可能整包被并掉（例如
+ * 3. **宿主用到的 API**：`snapshotEvents` / `deriveEventMessage` / 三个事件名 /
+ *    `createUserMessage` / `steer(` —— 任何一个消失，插件就是"装得上但不干活"。
+ * 4. **`dsh.client.inject` 里引用的包**：rc 里可能整包被并掉（例如
  *    `dsh-client-ui-slots` 在 rc.5 已不存在）。DSH 对"注入了不存在的包"是**容忍**的
  *    （rc.5 自己的官方包里就有同样情形），所以这里只报事实、不算失败。
  *
@@ -18,7 +20,7 @@
  *
  * ```powershell
  * node scripts/test-dsh-compat.mjs
- * # 换一台机器 / 换安装位置：
+ * # 换一台机器 / 换安装位置 / 核对一份临时装出来的 DSH：
  * $env:DSH_ASAR = "D:\\path\\to\\app.asar"; node scripts/test-dsh-compat.mjs
  * ```
  *
@@ -62,7 +64,10 @@ try {
   process.exit(0);
 }
 
-const pkgRoot = "dsh/node_modules";
+/** 依赖根（`@deepseek-ai/<pkg>` 直接拼在这个后面）。 */
+const nmRoot = "dsh/node_modules";
+/** 官方包目录（只用于 listDir 枚举与拼 asar 内路径）。 */
+const pkgRoot = nmRoot + "/@deepseek-ai";
 const readText = (p) => {
   const b = readEntry(asar, p);
   return b === null ? null : b.toString("utf8");
@@ -76,29 +81,24 @@ const readJson = (p) => {
     return null;
   }
 };
-const dirOfPkg = (name) => pkgRoot + "/" + name;
-const pkgJsonOf = (name) => readJson(dirOfPkg(name) + "/package.json");
-
+const pkgJsonOf = (name) => readJson(nmRoot + "/" + name + "/package.json");
 const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
 
 console.log("=== ① 已安装的 DSH ===");
 const webApp = pkgJsonOf("@deepseek-ai/dsh-web-app");
 ok(webApp !== null, "找到 @deepseek-ai/dsh-web-app", asarPath);
 const version = webApp?.version ?? "unknown";
-console.log("  DSH web-app 版本：" + version);
+console.log("  DSH web-app 版本：" + version + "  ｜ asar：" + asarPath);
 
 console.log("");
 console.log("=== ② 官方 standard.patch.yml 与我们的底本 ===");
-const official = readEntry(asar, pkgRoot + "/@deepseek-ai/dsh-web-app/presets/standard.patch.yml");
+const official = readEntry(asar, pkgRoot + "/dsh-web-app/presets/standard.patch.yml");
 ok(official !== null, "读到官方 standard.patch.yml");
 if (official !== null) {
   const officialSha = sha256(official);
   const dir = join(root, "scripts", "baselines");
   const baselines = readdirSync(dir).filter((f) => /^standard\.dsh-.+\.patch\.yml$/.test(f));
-  const rows = baselines.map((f) => ({
-    f,
-    sha: sha256(readFileSync(join(dir, f))),
-  }));
+  const rows = baselines.map((f) => ({ f, sha: sha256(readFileSync(join(dir, f))) }));
   const match = rows.find((r) => r.sha === officialSha);
   ok(
     match !== undefined,
@@ -106,7 +106,12 @@ if (official !== null) {
     "官方 sha256=" + officialSha.slice(0, 16) + "…；自带 " + rows.length + " 份都没对上",
   );
   if (match) console.log("  对上的是：" + match.f);
-  else console.log("  → 上游 preset 变了：请按 scripts/baselines/README.md 导出新底本（standard.dsh-" + version + ".patch.yml）");
+  else
+    console.log(
+      "  → 上游 preset 变了：按 scripts/baselines/README.md 导出新底本（standard.dsh-" +
+        version +
+        ".patch.yml），再 npm run build:preset",
+    );
 }
 
 console.log("");
@@ -134,7 +139,52 @@ for (const name of names) {
 ok(unresolved === 0, "preset 引用的 " + names.length + " 个条目全部可解析", unresolved + " 个解析不了");
 
 console.log("");
-console.log("=== ④ dsh.client.inject 引用的包（缺包是否被容忍）===");
+console.log("=== ④ 宿主用到的 API 还在不在 ===");
+/**
+ * 在**整包**的 lib 树里找某个符号。
+ *
+ * 为什么要扫全包：rc 之间会把实现挪进 `lib/types/*.js`（例如 `tools/result` 在
+ * 0.2.2-rc.1 里就不在 `dsh-tools/lib/index.js` 那一层了）。只查一个文件会**误报缺失**
+ * —— 这个假警报实际响过一次（2026-11-07）。
+ */
+const packageHas = (pkg, needle) => {
+  const base = nmRoot + "/" + pkg + "/lib";
+  const walk = (dir, depth) => {
+    if (depth > 3) return false;
+    let names;
+    try {
+      names = listDir(asar.header, dir);
+    } catch {
+      return false;
+    }
+    for (const n of names) {
+      const path = dir + "/" + n;
+      if (n.endsWith(".js")) {
+        const t = readText(path);
+        if (t !== null && t.includes(needle)) return true;
+      } else if (!n.includes(".")) {
+        if (walk(path, depth + 1)) return true;
+      }
+    }
+    return false;
+  };
+  return walk(base, 0);
+};
+const apiProbes = [
+  ["session.snapshotEvents", "@deepseek-ai/dsh-session", "snapshotEvents("],
+  ["session.deriveEventMessage", "@deepseek-ai/dsh-session", "deriveEventMessage"],
+  ["事件 agent/turn-stopping", "@deepseek-ai/dsh-agent-loop", "agent/turn-stopping"],
+  ["事件 agent/error", "@deepseek-ai/dsh-agent-loop", "agent/error"],
+  ["agent.steer(", "@deepseek-ai/dsh-agent-loop", "steer("],
+  ["事件 tools/result", "@deepseek-ai/dsh-tools", "tools/result"],
+  ["createUserMessage", "@deepseek-ai/dsh-llm", "createUserMessage"],
+];
+for (const [label, pkg, needle] of apiProbes) {
+  ok(packageHas(pkg, needle), label, pkg + " 的 lib 树里没有 " + needle);
+}
+
+console.log("");
+console.log("=== ⑤ dsh.client.inject 引用的包（缺包是否被容忍）===");
 const self = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const injects = self?.dsh?.client?.inject ?? [];
 for (const name of injects) {
@@ -142,11 +192,10 @@ for (const name of injects) {
   if (exists) ok(true, name + " 存在");
   else note(name + " 在 " + version + " 里已不存在（DSH 对缺包是容忍的，见官方先例）");
 }
-// 官方先例：rc 里有没有官方包也 inject 了不存在的包
-const officialNames = listDir(asar.header, pkgRoot + "/@deepseek-ai").filter((n) => n.startsWith("dsh-client"));
+const officialNames = listDir(asar.header, pkgRoot).filter((n) => n.startsWith("dsh-client"));
 let precedents = 0;
 for (const p of officialNames) {
-  const pj = pkgJsonOf("@deepseek-ai/" + p);
+  const pj = pkgJsonOf(p);
   for (const dep of pj?.dsh?.client?.inject ?? []) {
     if (pkgJsonOf(dep) === null) {
       precedents++;

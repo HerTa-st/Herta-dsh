@@ -55,7 +55,7 @@
 
 ## ⚙️ 兼容性（先看这一节）
 
-**面向 DSH `0.1.7-rc.2` 起（`0.2.1-rc.5` 实测）。** 下面三处是 0.1.5 → 0.1.7 之间
+**面向 DSH `0.1.7-rc.2` 起（`0.2.2-rc.1` 实测）。** 下面三处是 0.1.5 → 0.1.7 之间
 的**破坏性 API 变更**（都是实测出来的，不是猜的）：
 
 | 变了什么                           | 0.1.5 时的写法                                                                       | 0.1.7 的现状                                                                                                                                                                                                                                                                                | 本仓库怎么办                                                                                                                                                                                                                                   |
@@ -74,6 +74,24 @@
 `ctx.on('agent/turn-stopping' | 'agent/error' | 'tools/result')`、
 `@deepseek-ai/dsh-llm` 的 `BlockAssembler` / `createUserMessage`、
 `webServer.register({ kind: 'prefix' })`。
+
+### 0.2.2-rc.1 的核对（2026-11-07）
+
+**这一版上游真的改了 preset**，所以不是"核对一下就完"：官方 `standard.patch.yml` 与
+rc.5 那份**不再逐字节相同**（新 sha256 `3006cc37…`，6858 B），差异三处：
+
+| 差异 | 影响 |
+| ---- | ---- |
+| **删掉** `tool-subagent-list-agents` 一行（`@deepseek-ai/dsh-tool-subagent-control/list-agents`） | 那个**子路径导出在 rc.1 里没了**（`exports` 只剩 `.` / `./src/*` / `./package.json` / `./locale/*.json`）→ 旧 preset 引用它会解析不了 |
+| 新增 `config.applyPatch: false`、把 `modelSelectionSettings` 换成 `modelSelection` + `modelDiscovery` | 工具配置跟上游 |
+| 某行 `disabled: true` → `disabled: !!js "!ctx.get('profileContext')"` | 由运行时上下文决定启停 |
+
+处置：收 `scripts/baselines/standard.dsh-0.2.2-rc.1.patch.yml`，重跑 `npm run build:preset`
+（`resolveBaseline()` 取版本最新那份）→ `preset/herta.patch.yml` 里那行随之消失、新字段跟上游。
+宿主 API 与客户端服务这一版**没变**。
+
+> 核这一版用的是**从安装包里解出来的 asar**（`$env:DSH_ASAR` 指过去，见
+> `scripts/test-dsh-compat.mjs` 的用法），不用先升级、也不动正在用的那份安装。
 
 ### 0.2.1-rc.5 的核对（2026-10-30）
 
